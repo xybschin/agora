@@ -23,6 +23,15 @@ export interface TickResult {
   usage: { promptTokens: number; completionTokens: number };
 }
 
+/**
+ * How many of the agent's own successfully posted messages the runtime keeps to
+ * remind it not to restate them (mechanism C of the repetition investigation:
+ * no self-history). A small bounded queue -- the last 2-3 posts -- is enough:
+ * the agent's recent commitments are what it tends to reproduce verbatim, and
+ * a longer list would crowd the prompt for little gain.
+ */
+const OWN_MESSAGE_HISTORY_MAX = 3;
+
 const STANCE_TOOL: ToolSpec = {
   type: "function",
   function: {
@@ -48,6 +57,15 @@ const STANCE_TOOL: ToolSpec = {
  */
 export class AgentRuntime {
   private currentStance: number;
+  /**
+   * The agent's own successfully posted messages (most recent last), kept so
+   * it can recognize and avoid restating commitments it has already made.
+   * Bounded to OWN_MESSAGE_HISTORY_MAX. Scoped to this instance, which is one
+   * agent in one Run: each agent container constructs its own AgentRuntime at
+   * process start, and each Run starts fresh containers, so the queue is
+   * isolated per agent and per Run by construction.
+   */
+  private ownMessageHistory: string[] = [];
 
   constructor(private readonly config: AgentRuntimeConfig) {
     this.currentStance = config.agentDef.persona.initialStance;
@@ -55,6 +73,11 @@ export class AgentRuntime {
 
   getStance(): number {
     return this.currentStance;
+  }
+
+  /** The agent's own recent posts, oldest first. Exposed for tests. */
+  getOwnMessageHistory(): readonly string[] {
+    return this.ownMessageHistory;
   }
 
   async runTick(tick: number): Promise<TickResult> {
@@ -73,6 +96,7 @@ export class AgentRuntime {
           readWindowSize: memoryWindowSize,
           currentStance: this.currentStance,
           isFirstTick: tick === 1,
+          ownMessageHistory: this.ownMessageHistory,
         }),
       },
       {
@@ -149,6 +173,15 @@ export class AgentRuntime {
                   typeof args.replyToEventId === "string" ? args.replyToEventId : undefined,
                 timestamp: sent.createdAt,
               });
+              // Only a fully successful post becomes a remembered commitment:
+              // reaching here means the send did not throw and the transcript
+              // event landed. A failed send throws above (or in callTool) and
+              // never advances the queue, so a message the room never saw is
+              // not offered back to the model as something to avoid restating.
+              this.ownMessageHistory.push(String(args.content ?? ""));
+              if (this.ownMessageHistory.length > OWN_MESSAGE_HISTORY_MAX) {
+                this.ownMessageHistory.shift();
+              }
             } catch (parseError) {
               console.error("Failed to parse matrix_send_message response:", resultText);
               throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
