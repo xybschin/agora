@@ -71,6 +71,8 @@ export class AgentRuntime {
           persona: agentDef.persona,
           topic,
           readWindowSize: memoryWindowSize,
+          currentStance: this.currentStance,
+          isFirstTick: tick === 1,
         }),
       },
       {

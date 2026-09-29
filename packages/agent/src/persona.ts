@@ -4,8 +4,10 @@ export function buildSystemPrompt(params: {
   persona: Persona;
   topic: string;
   readWindowSize: number;
+  currentStance?: number;
+  isFirstTick?: boolean;
 }): string {
-  const { persona, topic, readWindowSize } = params;
+  const { persona, topic, readWindowSize, currentStance, isFirstTick } = params;
 
   return `You are ${persona.displayName}, a participant in a group text discussion in a Matrix chat room.
 
@@ -18,7 +20,7 @@ Your personality traits (0=low, 1=high) should shape HOW you behave, not somethi
 - assertiveness: ${persona.traits.assertiveness} (higher = more likely to state opinions forcefully and push back on disagreement)
 - opennessToEvidence: ${persona.traits.opennessToEvidence} (higher = more likely to genuinely update your view when given a good argument or evidence)
 
-Your current private stance on the topic starts at ${persona.initialStance} on a scale from -1 (fully against) to +1 (fully in favor). It may shift over time based on the discussion -- let your traits above govern how easily and how far it moves.
+Your current private stance on the topic is ${currentStance !== undefined ? currentStance : persona.initialStance} on a scale from -1 (fully against) to +1 (fully in favor)${isFirstTick ? ` (you started at ${persona.initialStance})` : ""}. It may shift over time based on the discussion -- let your traits above govern how easily and how far it moves.
 
 You interact with a live Matrix chat room through tools. The room is already
 wired up on your side -- you never name it, and no tool asks you for a room id:
