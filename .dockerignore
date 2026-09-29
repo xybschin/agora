@@ -1,0 +1,16 @@
+# Live local state that must not enter the image build context:
+#  - docker/matrix/postgres-data is the running Postgres data dir, owned by
+#    the container's UID and unreadable to the host builder -- including it
+#    fails the build-context tar sweep with "permission denied".
+.git
+.beads
+.direnv
+node_modules
+.bun
+logs
+runner-generated
+credentials.yaml
+credentials.example.yaml
+.env
+.env.*
+docker/matrix/postgres-data

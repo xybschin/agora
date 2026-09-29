@@ -1,0 +1,113 @@
+/**
+ * A Run's Matrix room, created and populated before the agents start.
+ *
+ * The room used to be provisioned once by `matrixBootstrap.ts` and recorded in
+ * credentials.yaml, which meant a second Run of the same Scenario walked into
+ * the first Run's conversation and inherited its Transcript. That contradicts
+ * the glossary's Run, so the runner now creates a room per Run here and threads
+ * its id down to the seed step and the compose generator.
+ *
+ * This is the one place that knows how a Run's room is assembled, which is why
+ * the Scenario's Readers are admitted here rather than at the call site: a
+ * Reader is only ever invited into a room whose permissions have already been
+ * written and read back, so a Run can never leave a human sitting in a room
+ * where they could speak for the population (ADR-0003).
+ */
+
+import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
+import { createRoom, inviteUserToRoom, joinRoom } from "./matrixRooms.js";
+import { establishRunRoomPermissions, runRoomPowerLevels } from "./roomPermissions.js";
+
+/**
+ * The name a Run's room carries. It repeats the Scenario and carries the runId,
+ * so a Reader browsing the homeserver can match a room to the transcript in
+ * `logs/<runId>/events.jsonl` without being told which room a Run used.
+ */
+export function roomNameForRun(scenarioName: string, runId: string): string {
+  return `Agora - ${scenarioName} - ${runId}`;
+}
+
+/**
+ * Creates this Run's room, admits every agent in the Scenario's roster and every
+ * Reader the Scenario declares, and returns the room id for the rest of the Run
+ * to use.
+ *
+ * The setup account owns the room: it creates it, it sends the invites, and it
+ * writes the room's permissions. Matrix only lets a user join as themselves, so
+ * each agent's join runs with that agent's own access token -- the setup
+ * account cannot admit anyone directly.
+ *
+ * Agents are admitted in roster order rather than in parallel so the homeserver
+ * sees a deterministic create-then-invite-then-join sequence, which is both
+ * easier to read in a Run's console output and to assert against in a test.
+ * Permissions are pinned before any Reader is invited, so the invites that admit
+ * humans to watch a Run only ever go to a room already known to be read-only for
+ * them.
+ */
+export async function createRunRoom(params: {
+  scenario: ScenarioConfig;
+  credentials: CredentialsFile;
+  runId: string;
+}): Promise<string> {
+  const { scenario, credentials, runId } = params;
+  const baseUrl = credentials.matrix.hostBaseUrl;
+  const setupAccessToken = credentials.matrixSetupAccessToken;
+
+  // Resolve the whole roster up front: a room admitted half-way is a room an
+  // agent silently cannot read, so a missing credentials entry has to fail the
+  // Run before the first invite goes out.
+  for (const agent of scenario.agents) {
+    if (!credentials.agents[agent.id]) {
+      throw new Error(
+        `Scenario references agent "${agent.id}" with no credentials entry, so the Run's room cannot admit it`,
+      );
+    }
+  }
+
+  console.log(`Creating a Matrix room for run ${runId}...`);
+  const roomId = await createRoom(
+    baseUrl,
+    setupAccessToken,
+    roomNameForRun(scenario.name, runId),
+  );
+  console.log(`  room: ${roomId}`);
+
+  for (const agent of scenario.agents) {
+    const cred = credentials.agents[agent.id]!;
+    await inviteUserToRoom(baseUrl, setupAccessToken, roomId, cred.matrixUserId);
+    await joinRoom(baseUrl, cred.matrixAccessToken, roomId);
+  }
+  console.log(`Admitted ${scenario.agents.length} agents to ${roomId}.`);
+
+  // A Reader must read the room in full and be refused every send, so the room's
+  // permissions are written explicitly and then read back: this throws rather
+  // than let a Run continue into a room whose defaults would let a Reader post.
+  await establishRunRoomPermissions({
+    baseUrl,
+    accessToken: setupAccessToken,
+    roomId,
+    powerLevels: runRoomPowerLevels({
+      setupUserId: credentials.matrixSetupUserId,
+      agentUserIds: scenario.agents.map(
+        (agent) => credentials.agents[agent.id]!.matrixUserId,
+      ),
+    }),
+  });
+  console.log(
+    `  permissions: setup account at 100, agents at 50, everyone else read-only.`,
+  );
+
+  // Readers are invited, never joined. The runner holds no token for a Reader --
+  // an invite takes a user id and nothing else, and that is the whole reason no
+  // Reader credential is ever read or stored -- so a human accepts the invite
+  // themselves, once per room.
+  const readers = scenario.observers ?? [];
+  for (const reader of readers) {
+    await inviteUserToRoom(baseUrl, setupAccessToken, roomId, reader);
+  }
+  if (readers.length > 0) {
+    console.log(`Invited ${readers.length} Readers to ${roomId}.`);
+  }
+
+  return roomId;
+}

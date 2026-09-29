@@ -1,93 +1,152 @@
 # agora
 
+A harness for running populations of isolated, Docker-based LLM agents that
+chat together in a Matrix room, to see whether human-group phenomena
+(starting with opinion polarization) emerge from the interaction.
 
+## Architecture
 
-## Getting started
+- **`packages/mcp-server`** -- one shared MCP server (Streamable HTTP) exposing
+  Matrix tools (`matrix_read_room`, `matrix_send_message`,
+  `matrix_add_reaction`). Every agent authenticates with its own access token
+  via the `Authorization` header; identity is bound to that token, never
+  passed as a tool argument, so agents can't impersonate each other.
+- **`packages/agent`** -- one process per agent (one container per agent at
+  runtime). Runs a true tool-calling loop each tick: the model itself decides
+  when to read the room, post, and record its stance, up to
+  `maxToolStepsPerTick` steps. Exposes `POST /tick` and `GET /health`.
+- **`packages/runner`** -- the CLI (`agora <scenario.yaml>`) that: creates a
+  fresh Matrix room, pins its permissions so the scenario's declared Readers can
+  read the Run but not post to it, and posts the seed message, generates a
+  docker-compose file for the scenario, brings the containers up, drives
+  fixed-tick round-based scheduling (all agents ticked in parallel, then a
+  sleep, repeat), enforces the token budget cap, and tears everything down.
+- **`packages/shared`** -- scenario/credentials schemas (zod) and the shared
+  JSONL event log used by both the runner and every agent container.
+- **`docker-compose.infra.yml`** -- a persistent (not per-scenario) Matrix
+  stack: Synapse (`matrixdotorg/synapse`) backed by PostgreSQL, Element Web
+  (`vectorim/element-web`) as the web client, and an Nginx reverse proxy that
+  routes `/` to Element Web and `/_matrix` / `/_synapse` to Synapse. Used
+  instead of a hosted chat service so "bots" are just accounts on your own
+  instance -- no developer portal, no rate limits, no ToS risk. The previous
+  Discord/Spacebar backend was replaced by this stack (see
+  `docs/matrix-db-decision.md` and `docs/matrix-proxy-decision.md`).
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+### Isolation model
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+Each agent gets its own dedicated Docker network that only it and
+`mcp-server` join. Agents never share a network with each other, so there is
+no route between them -- any influence you observe in the logs happened
+*through the simulated Matrix room*, not a side channel. `mcp_server`
+additionally joins the persistent `agora_infra` network so it can reach
+Synapse (see `composeGenerator.ts`).
 
-## Add your files
+## One-time setup (Matrix, recommended)
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
+1. `bun install` at the repo root.
+2. `docker compose -f docker-compose.infra.yml up -d` -- brings up the
+   self-hosted Matrix stack (Synapse + PostgreSQL + Element Web + Nginx) with
+   Element Web reachable at `http://localhost:8000` and the Matrix client/federation
+   API proxied under `/_matrix`. Backed by named volumes so data survives
+   restarts.
+3. `bun run bootstrap:matrix scenarios/remote-work-policy.yaml` -- registers
+   one account per agent (+ a setup account) and writes the result to
+   `credentials.yaml`. It creates no room: every Run creates its own (see
+   "Running a scenario"), so there is nothing to re-provision between runs.
+4. Open `credentials.yaml` and fill in each agent's `llmApiKey` (the Matrix
+   side is already done by step 3). Also set the shared secrets in
+   `docker/matrix/homeserver.yaml` before first boot.
 
+## One-time setup (hosted Matrix, alternative)
+
+If you'd rather use a hosted/remote Matrix homeserver instead of the local
+Docker stack:
+
+1. Create one account per agent in your scenario, plus one extra "setup"
+   account with permission to create and join rooms.
+2. Copy `credentials.example.yaml` to `credentials.yaml` (gitignored) and fill
+   in the setup account's `matrixSetupUserId` / `matrixSetupAccessToken` and
+   each agent's `matrixUserId` / `matrixAccessToken` / `llmApiKey`. For the
+   `matrix:` block, set both `hostBaseUrl` and `containerBaseUrl` to your
+   homeserver's public URL -- the two differ only on the self-hosted stack,
+   where the mcp_server container reaches Synapse by DNS name. The block is
+   required either way; nothing about it selects a remote homeserver.
+3. `bun install` at the repo root.
+
+## Running a scenario
+
+```sh
+bun run packages/runner/src/index.ts scenarios/remote-work-policy.yaml
 ```
-cd existing_repo
-git remote add origin https://gitlab.example.invalid/bjarne.schindler/agora.git
-git branch -M main
-git push -uf origin main
+
+Bun runs the TypeScript directly -- there's no build/compile step. Use
+`bun run --filter '*' typecheck` to type-check everything without running
+it.
+
+This creates a fresh Matrix room, posts the seed message, starts the
+containers, runs the configured number of ticks, then tears the containers
+down. Nothing is deleted from the homeserver -- the room and transcript stay
+there for review.
+
+Each Run gets its own room, named `Agora - <scenario> - <runId>`, so running
+the same Scenario twice yields two independent conversations: an agent in the
+second Run starts from a room with no history rather than reading the first
+Run's transcript. Rooms therefore accumulate on the homeserver, one per Run;
+the `runId` in the name matches the transcript under `logs/<runId>/`, which is
+how you tell them apart. To re-run a Scenario you do not need to re-bootstrap --
+bootstrap the accounts once, then run as many times as you like.
+
+Per-run JSONL logs land in `logs/<runId>/events.jsonl` (message, stance, and
+usage events).
+
+### Watching a Run live
+
+A Scenario can name human **Readers** in an optional `observers` list -- Matrix
+user ids of accounts that already exist on the homeserver:
+
+```yaml
+observers:
+  - "@admin:localhost"
 ```
 
-## Integrate with your tools
+Every Run invites each Reader to that Run's room, and writes the room's power
+levels before it does: agents sit above the room's default event threshold so
+they can post, while invite, kick, ban, redaction and the room's metadata events
+sit above the agents, leaving a Reader at the default level -- able to read the
+whole conversation as it happens, and refused by the homeserver when it tries to
+send a message or a reaction. A Reader accepts the invite themselves, once per
+room; the runner holds no token for them, so there is nothing to add to
+`credentials.yaml`. A Reader is not in the roster, so it gets no container, no
+LLM credentials and no tick, and the agents have no member-list tool to notice
+it -- it is invisible to the population it is watching. (Someone reading the
+finished transcript afterwards needs none of this; they are an **Observer**.)
 
-* [Set up project integrations](https://gitlab.example.invalid/bjarne.schindler/agora/-/settings/integrations)
+The runner reads the power levels back after writing them and refuses to
+continue a Run whose room did not end up holding what it asked for. That
+refusal is recorded as a `run_aborted` event at tick 0 in
+`logs/<runId>/events.jsonl`, so the Run's status is *aborted* rather than merely
+incomplete.
 
-## Collaborate with your team
+## Known limitations / things to check before trusting a run
 
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+- `llm.ts` speaks the OpenAI-compatible `/chat/completions` schema only. It
+  works against OpenAI, OpenRouter, Ollama, vLLM, etc., but **not** against
+  Anthropic's native `/v1/messages` API -- route Claude models through
+  OpenRouter rather than pointing directly at `api.anthropic.com`.
+- The MCP server code was written against `@modelcontextprotocol/sdk@1.30.0`
+  (verified against the installed package's own stateless-HTTP example). If
+  `bun install` picks up a materially newer major version, re-check
+  `packages/mcp-server/src/index.ts` and `packages/agent/src/mcpClient.ts`
+  against that version's API.
+- Runtime is Bun (`oven/bun:1-slim` in the Dockerfiles), not Node. Each
+  service Dockerfile only copies its own + `@agora/shared`'s `package.json`
+  before `bun install --frozen-lockfile`, so Bun prints a harmless
+  `skipped N workspaces ... not on disk` note for the other packages -- this
+  was verified against `bun.lock` and doesn't affect the install.
+- Rate limits: ticks run all agents in parallel (Q22). If your LLM provider
+  rate-limits aggressively, raise `tickIntervalMs` in the scenario file or
+  pick a less-limited provider -- there's no retry/backoff built in yet.
+- Matrix access tokens and LLM API keys live in plaintext env vars inside
+  each generated compose file (`runner-generated/`, gitignored). Fine for a
+  local research harness; do not reuse this pattern for anything
+  internet-facing.

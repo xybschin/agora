@@ -1,0 +1,42 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+/logs/*
+!/logs/.gitkeep
+
+/runner-generated/*
+!/runner-generated/.gitkeep
+
+credentials.yaml
+.env
+.env.local
+settings.local.json
+
+# direnv / nix-direnv generated local state
+.direnv/
+
+# Local toolchain / issue-tracker state
+.bun/
+.beads/
+
+# Synapse-generated secrets
+docker/matrix/synapse/*
+!/docker/matrix/synapse/homeserver.yaml
+!/docker/matrix/synapse/log.yaml
+
+# Postgres data volume. The infra compose mounts it under docker/matrix/, so
+# that is the path that has to match -- the bare docker/postgres-data line
+# below never matched anything and left the live database in git's sights.
+docker/matrix/postgres-data
+docker/postgres-data
+
+.venv/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads.gate.lock
+flake.lock
+

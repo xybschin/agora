@@ -1,0 +1,10 @@
+{
+    "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
+    "nixEnvSelector.useFlakes": true,
+    "nixEnvSelector.flakeShell": "default",
+    "dotfiles-toggle.activeProfile": "default",
+    "[typescript]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "editor.formatOnSave": true
+    }
+}
