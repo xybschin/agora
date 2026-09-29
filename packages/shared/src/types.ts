@@ -31,6 +31,24 @@ export interface BudgetConfig {
   maxTotalCostUsd?: number;
 }
 
+/**
+ * Sampling controls applied to an agent's LLM calls (mechanism F: bounded,
+ * per-agent-varied output). Optional everywhere; when a field is omitted the
+ * next-most-specific source wins, and the final fallback is llm.ts's own
+ * defaults (maxTokens ~150, frequency/presence penalties 0.4, temperature
+ * hashed from the agent id). Precedence: agent credential > Scenario > defaults.
+ */
+export interface SamplingParams {
+  /** Maximum tokens in the response (enforces brevity). */
+  maxTokens?: number;
+  /** Penalty for repeating tokens, 0-2 (reduces echo). */
+  frequencyPenalty?: number;
+  /** Penalty for any occurrence of a token, 0-2 (reduces echo). */
+  presencePenalty?: number;
+  /** Sampling temperature, 0-2 (per-agent variation avoids convergence). */
+  temperature?: number;
+}
+
 export interface ScenarioConfig {
   name: string;
   topic: string;
@@ -54,6 +72,9 @@ export interface ScenarioConfig {
    * stored.
    */
   observers?: string[];
+  /** Run-wide LLM sampling controls, recorded with the Scenario (every Run is an
+   * execution of it). Per-agent credential overrides win over this. */
+  samplingParams?: SamplingParams;
 }
 
 export interface AgentCredential {
@@ -62,6 +83,8 @@ export interface AgentCredential {
   llmBaseUrl: string;
   llmApiKey: string;
   llmModel: string;
+  /** Per-agent LLM sampling overrides. Wins over the Scenario's samplingParams. */
+  sampling?: SamplingParams;
 }
 
 export interface MatrixServerConfig {

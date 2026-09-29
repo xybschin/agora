@@ -96,6 +96,32 @@ describe("parseCredentialsFile", () => {
     });
     expect(Object.keys(parsed)).not.toContain("observers");
   });
+
+  test("reads a per-agent sampling override off the agent's credential", () => {
+    // Per-agent sampling wins over the Scenario's samplingParams; here it is
+    // set only for alex, and it must round-trip through the schema.
+    const parsed = parseCredentialsFile({
+      ...matrixCredentials,
+      agents: {
+        alex: {
+          ...matrixCredentials.agents.alex!,
+          sampling: { temperature: 1.4, maxTokens: 400 },
+        },
+      },
+    });
+    expect(parsed.agents["alex"]?.sampling).toEqual({ temperature: 1.4, maxTokens: 400 });
+  });
+
+  test("rejects a per-agent sampling value out of the API's range", () => {
+    expect(() =>
+      parseCredentialsFile({
+        ...matrixCredentials,
+        agents: {
+          alex: { ...matrixCredentials.agents.alex!, sampling: { temperature: 2.5 } },
+        },
+      }),
+    ).toThrow();
+  });
 });
 
 function agent(id: string) {
@@ -160,6 +186,52 @@ describe("parseScenarioConfig", () => {
     expect(() =>
       parseScenarioConfig({ ...scenario, observers: [42] }),
     ).toThrow();
+  });
+
+  test("reads samplingParams off a Scenario that sets them", () => {
+    // The Run-wide LLM sampling, recorded with every Run of this Scenario.
+    const parsed = parseScenarioConfig({
+      ...scenario,
+      samplingParams: {
+        maxTokens: 120,
+        frequencyPenalty: 0.5,
+        presencePenalty: 0.3,
+        temperature: 1.1,
+      },
+    });
+    expect(parsed.samplingParams).toEqual({
+      maxTokens: 120,
+      frequencyPenalty: 0.5,
+      presencePenalty: 0.3,
+      temperature: 1.1,
+    });
+  });
+
+  test("a Scenario that names no samplingParams is unchanged", () => {
+    // Optional, like observers: a Scenario that says nothing about sampling
+    // must behave exactly as before and get the llm.ts defaults.
+    const parsed = parseScenarioConfig(scenario);
+    expect("samplingParams" in parsed).toBe(false);
+  });
+
+  test("rejects samplingParams values out of the API's range", () => {
+    expect(() =>
+      parseScenarioConfig({ ...scenario, samplingParams: { temperature: 3 } }),
+    ).toThrow();
+    expect(() =>
+      parseScenarioConfig({ ...scenario, samplingParams: { frequencyPenalty: -1 } }),
+    ).toThrow();
+    expect(() =>
+      parseScenarioConfig({ ...scenario, samplingParams: { maxTokens: 0 } }),
+    ).toThrow();
+  });
+
+  test("accepts a partial samplingParams set", () => {
+    const parsed = parseScenarioConfig({
+      ...scenario,
+      samplingParams: { maxTokens: 200 },
+    });
+    expect(parsed.samplingParams).toEqual({ maxTokens: 200 });
   });
 });
 

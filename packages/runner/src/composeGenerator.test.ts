@@ -147,4 +147,78 @@ describe("generateComposeFile", () => {
     expect(withReaders.agentPorts).toEqual({ alex: 4100, bri: 4101 });
     expect(withReaders.yamlText).not.toContain("bjarse");
   });
+
+  test("passes the Scenario's samplingParams to each agent as LLM_SAMPLING_JSON", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario: {
+        ...scenario,
+        samplingParams: { maxTokens: 120, frequencyPenalty: 0.5, temperature: 1.1 },
+      },
+      credentials,
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+
+    for (const agentId of ["alex", "bri"]) {
+      // The agent resolves the final values (defaults + agent-id temperature);
+      // the runner only forwards the merged Scenario-wide sampling.
+      const merged = JSON.parse(
+        services[`agent_${agentId}`]!.environment["LLM_SAMPLING_JSON"]!,
+      ) as {
+        maxTokens?: number;
+        frequencyPenalty?: number;
+        temperature?: number;
+      };
+      expect(merged.maxTokens).toBe(120);
+      expect(merged.frequencyPenalty).toBe(0.5);
+      expect(merged.temperature).toBe(1.1);
+    }
+  });
+
+  test("a per-agent credential sampling override wins field-by-field", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario: {
+        ...scenario,
+        samplingParams: { maxTokens: 120, temperature: 1.1 },
+      },
+      credentials: {
+        ...credentials,
+        agents: {
+          ...credentials.agents,
+          alex: { ...credentials.agents.alex!, sampling: { maxTokens: 400, temperature: 1.4 } },
+        },
+      },
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+
+    // alex's credential override wins where it is set...
+    expect(JSON.parse(services["agent_alex"]!.environment["LLM_SAMPLING_JSON"]!)).toEqual({
+      maxTokens: 400,
+      temperature: 1.4,
+    });
+    // ...while bri, which has no override, keeps the Scenario's values.
+    expect(JSON.parse(services["agent_bri"]!.environment["LLM_SAMPLING_JSON"]!)).toEqual({
+      maxTokens: 120,
+      temperature: 1.1,
+    });
+  });
+
+  test("emits no LLM_SAMPLING_JSON when neither source sets sampling", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+    expect(yamlText).not.toContain("LLM_SAMPLING_JSON");
+  });
 });

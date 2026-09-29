@@ -68,6 +68,19 @@ const matrixUserIdSchema = z
   .string()
   .regex(/^@[^:\s]+:\S+$/, "Matrix user id must look like @localpart:server");
 
+/**
+ * LLM sampling controls, optional in both the Scenario and a per-agent
+ * credential. Values are clamped to the ranges the (OpenAI-compatible) API
+ * accepts; anything out of range is a config error rather than silently
+ * passed through. Absent means "use the next source / the llm.ts default".
+ */
+const samplingParamsSchema = z.object({
+  maxTokens: z.number().int().positive().optional(),
+  frequencyPenalty: z.number().min(0).max(2).optional(),
+  presencePenalty: z.number().min(0).max(2).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+});
+
 export const scenarioConfigSchema = z.object({
   name: z.string(),
   topic: z.string(),
@@ -92,6 +105,10 @@ export const scenarioConfigSchema = z.object({
     .array(matrixUserIdSchema)
     .optional()
     .describe("Matrix user ids of Readers to invite into this Run's room"),
+  // Whole-Scenario LLM sampling, recorded with the Run (every Run carries the
+  // Scenario that produced it). Optional: a Scenario that says nothing about
+  // sampling must behave exactly as before and get the llm.ts defaults.
+  samplingParams: samplingParamsSchema.optional(),
 });
 
 export function parseScenarioConfig(raw: unknown) {
@@ -104,6 +121,8 @@ const agentCredentialSchema = z.object({
   llmBaseUrl: z.string(),
   llmApiKey: z.string(),
   llmModel: z.string(),
+  // Per-agent sampling overrides; wins over the Scenario's samplingParams.
+  sampling: samplingParamsSchema.optional(),
 });
 
 const matrixConfigSchema = z.object({

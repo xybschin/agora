@@ -51,6 +51,14 @@ export function generateComposeFile(params: {
     const port = basePort + index;
     agentPorts[agent.id] = port;
 
+    // Merge the Run-wide Scenario sampling with this agent's credential
+    // override (credential wins field-by-field, so per-agent overrides work
+    // while the Scenario's keeps what the credential leaves unset). Omitted
+    // when neither source sets anything, so an unchanged Run gets the same
+    // (defaults-only) behavior as before.
+    const mergedSampling = { ...scenario.samplingParams, ...cred.sampling };
+    const hasSampling = Object.keys(mergedSampling).length > 0;
+
     services[`agent_${agent.id}`] = {
       build: { context: "..", dockerfile: "docker/agent.Dockerfile" },
       networks: [netName, "agora_infra"],
@@ -73,6 +81,7 @@ export function generateComposeFile(params: {
         LLM_BASE_URL: cred.llmBaseUrl,
         LLM_API_KEY: cred.llmApiKey,
         LLM_MODEL: cred.llmModel,
+        ...(hasSampling ? { LLM_SAMPLING_JSON: JSON.stringify(mergedSampling) } : {}),
         PORT: "4000",
       },
     };
