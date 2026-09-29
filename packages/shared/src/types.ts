@@ -1,0 +1,83 @@
+export interface PersonaTraits {
+  /** 0-1: how strongly the agent shifts its stated opinion toward apparent group consensus. */
+  conformity: number;
+  /** 0-1: how forcefully the agent states opinions and pushes back on disagreement. */
+  assertiveness: number;
+  /** 0-1: how readily the agent updates its private stance given a good argument or evidence. */
+  opennessToEvidence: number;
+}
+
+export interface Persona {
+  displayName: string;
+  flavorText: string;
+  traits: PersonaTraits;
+  /** Seeded starting stance, -1 (fully against) to +1 (fully in favor). */
+  initialStance: number;
+}
+
+export interface AgentDefinition {
+  /** Lowercase-kebab id, also used as the docker-compose service suffix and credentials key. */
+  id: string;
+  persona: Persona;
+}
+
+export interface MemoryConfig {
+  /** Max number of recent room messages an agent is told to read per tick. */
+  windowSize: number;
+}
+
+export interface BudgetConfig {
+  maxTotalTokens?: number;
+  maxTotalCostUsd?: number;
+}
+
+export interface ScenarioConfig {
+  name: string;
+  topic: string;
+  /** Posted by the runner as a system/moderator message before tick 1. */
+  seedMessage: string;
+  ticks: number;
+  tickIntervalMs: number;
+  /** Hard cap on tool-calling steps within a single agent's tick, to bound runaway loops. */
+  maxToolStepsPerTick: number;
+  memory: MemoryConfig;
+  budget: BudgetConfig;
+  agents: AgentDefinition[];
+  /**
+   * Matrix user ids of this Scenario's Readers: humans invited into each Run's
+   * room to watch it live (ADR-0003). Omitted means no Readers, which is not the
+   * same as an empty list to any behaviour -- there is simply nobody to invite.
+   *
+   * A Reader carries no credentials of any kind. It is not in the roster, so it
+   * gets no container, no LLM credentials and no tick, and an invite takes only
+   * a user id -- which is why there is nowhere for a Reader's token to be
+   * stored.
+   */
+  observers?: string[];
+}
+
+export interface AgentCredential {
+  matrixAccessToken: string;
+  matrixUserId: string;
+  llmBaseUrl: string;
+  llmApiKey: string;
+  llmModel: string;
+}
+
+export interface MatrixServerConfig {
+  /** Base URL the host-side runner uses to reach Matrix, e.g. http://localhost:8008 */
+  hostBaseUrl: string;
+  /** Base URL containers use to reach Matrix over the shared agora_infra network, e.g. http://synapse:8008 */
+  containerBaseUrl: string;
+}
+
+export interface CredentialsFile {
+  /**
+   * Deliberately no room id: a Run creates its own room, so the room belongs to
+   * the Run rather than to the credentials file (ADR-0003).
+   */
+  matrixSetupAccessToken: string;
+  matrixSetupUserId: string;
+  matrix: MatrixServerConfig;
+  agents: Record<string, AgentCredential>;
+}

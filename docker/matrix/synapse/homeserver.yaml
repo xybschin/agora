@@ -1,0 +1,37 @@
+# Synapse homeserver configuration for the Agora infra stack.
+# See docs/matrix-db-decision.md.
+server_name: "localhost"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    type: http
+    bind_addresses: ["0.0.0.0"]
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+database:
+  name: psycopg2
+  args:
+    user: synapse
+    password: synapse
+    database: synapse
+    host: postgres
+    cp_min: 5
+    cp_max: 10
+log_config: /data/log.yaml
+report_stats: false
+enable_registration: true
+enable_registration_without_verification: true
+registration_shared_secret: "PUT_A_SHARED_SECRET_HERE"
+macaroon_secret_key: "PUT_A_MACAROON_KEY_HERE"
+form_secret: "PUT_A_FORM_SECRET_HERE"
+signing_key_path: /data/localhost.signing.key
+uploads_path: "/data/uploads"
+media_store_path: "/data/media_store"
+trusted_key_servers:
+  - server_name: "matrix.org"
+suppress_key_server_warning: true
+rc_registration:
+  per_second: 1000
+  burst_count: 1000

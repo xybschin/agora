@@ -1,0 +1,23 @@
+# Minimal Synapse logging config. Referenced by homeserver.yaml.
+version: 1
+formatters:
+  precise:
+    format: "%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(request)s - %(message)s"
+handlers:
+  file:
+    class: logging.handlers.RotatingFileHandler
+    formatter: precise
+    filename: /data/homeserver.log
+    maxBytes: 104857600
+    backupCount: 10
+  console:
+    class: logging.StreamHandler
+    formatter: precise
+loggers:
+  synapse.storage.SQL:
+    level: INFO
+  synapse.http.server:
+    level: DEBUG
+root:
+  level: WARN
+  handlers: [file, console]

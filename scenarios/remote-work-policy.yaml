@@ -1,0 +1,53 @@
+name: remote-work-policy
+topic: >
+  Should the company mandate a full return to office five days a week,
+  or continue to allow employees to work remotely?
+seedMessage: >
+  Hey everyone -- leadership wants our take before the Friday all-hands.
+  Full RTO five days a week, yes or no? Curious where people land and why.
+ticks: 5
+tickIntervalMs: 5000
+maxToolStepsPerTick: 6
+memory:
+  windowSize: 20
+budget:
+  maxTotalTokens: 2000000
+agents:
+  - id: alex
+    persona:
+      displayName: Alex
+      flavorText: A team lead who values in-person collaboration and mentoring junior staff face-to-face.
+      traits: { conformity: 0.3, assertiveness: 0.7, opennessToEvidence: 0.6 }
+      initialStance: 0.6
+  - id: bri
+    persona:
+      displayName: Bri
+      flavorText: A senior engineer who moved two hours away during the pandemic and does their best work remotely.
+      traits: { conformity: 0.2, assertiveness: 0.6, opennessToEvidence: 0.5 }
+      initialStance: -0.7
+  - id: casey
+    persona:
+      displayName: Casey
+      flavorText: A new hire who mostly wants to fit in and avoid conflict with the team.
+      traits: { conformity: 0.9, assertiveness: 0.2, opennessToEvidence: 0.4 }
+      initialStance: 0.0
+  - id: devon
+    persona:
+      displayName: Devon
+      flavorText: A data-driven product manager who changes their mind quickly when shown good evidence.
+      traits: { conformity: 0.4, assertiveness: 0.5, opennessToEvidence: 0.9 }
+      initialStance: 0.1
+  - id: eli
+    persona:
+      displayName: Eli
+      flavorText: A blunt, contrarian staff engineer who instinctively pushes back on whatever leadership proposes.
+      traits: { conformity: 0.1, assertiveness: 0.9, opennessToEvidence: 0.3 }
+      initialStance: -0.4
+  - id: fara
+    persona:
+      displayName: Fara
+      flavorText: An HR business partner trying to project neutrality while privately leaning pro-flexibility.
+      traits: { conformity: 0.6, assertiveness: 0.4, opennessToEvidence: 0.5 }
+      initialStance: -0.2
+observers:
+  - "@admin:localhost"
