@@ -4,7 +4,7 @@ import { MatrixMcpClient } from "./mcpClient.js";
 import { AgentRuntime } from "./loop.js";
 
 const env = loadAgentEnvConfig();
-const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken);
+const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken, env.matrixUserId);
 
 const runtime = new AgentRuntime({
   runId: env.runId,
@@ -12,6 +12,7 @@ const runtime = new AgentRuntime({
   agentDef: env.agentDefinition,
   topic: env.topic,
   roomId: env.roomId,
+  matrixUserId: env.matrixUserId,
   maxToolStepsPerTick: env.maxToolStepsPerTick,
   memoryWindowSize: env.memoryWindowSize,
   logDir: env.logDir,

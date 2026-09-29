@@ -5,7 +5,7 @@ export interface RoomMessage {
   sender: string;
   /** Display name if we can cheaply resolve it; otherwise the raw user ID. */
   senderDisplayName: string;
-  /** The message body (m.text / m.notice / fallback for other types). */
+  /** The message body (m.text / m.notice / fallback for other types). May be prefixed with "**your message:**" if sent by the caller. */
   content: string;
   replyToEventId?: string;
   /** ISO timestamp, from origin_server_ts (epoch millis). */
@@ -69,7 +69,12 @@ async function csRequest<T>(
 }
 
 /** Read the most recent messages in a room, oldest of the fetched first. */
-export async function readRoom(client: MatrixClient, roomId: string, limit: number): Promise<RoomMessage[]> {
+export async function readRoom(
+  client: MatrixClient,
+  roomId: string,
+  limit: number,
+  ownMatrixUserId?: string,
+): Promise<RoomMessage[]> {
   const params = new URLSearchParams({
     dir: "b", // backward: newest first
     limit: String(limit),
@@ -80,6 +85,21 @@ export async function readRoom(client: MatrixClient, roomId: string, limit: numb
     "GET",
     `/rooms/${encodeURIComponent(roomId)}/messages?${params.toString()}`,
   );
+
+  // Fetch member list to resolve displaynames
+  let memberMap: Record<string, string> = {};
+  try {
+    const membersData = await csRequest<{ joined: Record<string, { content: { displayname?: string } }> }>(
+      client,
+      "GET",
+      `/rooms/${encodeURIComponent(roomId)}/joined_members`,
+    );
+    for (const [userId, member] of Object.entries(membersData.joined ?? {})) {
+      memberMap[userId] = member.content?.displayname ?? userId;
+    }
+  } catch {
+    // If joined_members fails, fall back to user IDs
+  }
 
   const messages = (data.chunk ?? [])
     .filter((event) => {
@@ -93,11 +113,16 @@ export async function readRoom(client: MatrixClient, roomId: string, limit: numb
 
   return messages.map((event) => {
     const relatesTo = event.content?.["m.relates_to"];
+    const isOwnMessage = ownMatrixUserId && event.sender === ownMatrixUserId;
+    let content = summaryText(event);
+    if (isOwnMessage) {
+      content = `**your message:** ${content}`;
+    }
     return {
       eventId: event.event_id,
       sender: event.sender,
-      senderDisplayName: event.sender, // resolving display names would need /state or /joined_members; keep it cheap.
-      content: summaryText(event),
+      senderDisplayName: memberMap[event.sender] ?? event.sender,
+      content,
       replyToEventId: relatesTo?.["m.in_reply_to"]?.event_id,
       createdAt: new Date(event.origin_server_ts ?? Date.now()).toISOString(),
     };

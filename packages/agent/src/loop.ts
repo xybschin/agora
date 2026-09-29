@@ -10,6 +10,7 @@ export interface AgentRuntimeConfig {
   agentDef: AgentDefinition;
   topic: string;
   roomId: string;
+  matrixUserId: string;
   maxToolStepsPerTick: number;
   memoryWindowSize: number;
   logDir: string;

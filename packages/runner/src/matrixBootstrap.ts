@@ -81,6 +81,7 @@ async function registerAccount(
   baseUrl: string,
   accountId: string,
   registrationToken: string | undefined,
+  displayName: string,
 ): Promise<{ userId: string; accessToken: string }> {
   const username =
     `agora-${accountId}-${Math.random().toString(36).slice(2, 7)}`.toLowerCase();
@@ -112,6 +113,15 @@ async function registerAccount(
     clientPath("register"),
     { body },
   );
+
+  // Set the displayname on the newly created account
+  await csRequest(
+    baseUrl,
+    "PUT",
+    clientPath(`profile/${encodeURIComponent(data.user_id)}/displayname`),
+    { accessToken: data.access_token, body: { displayname: displayName } },
+  );
+
   return { userId: data.user_id, accessToken: data.access_token };
 }
 
@@ -141,13 +151,19 @@ async function main(): Promise<void> {
     args.baseUrl,
     "setup",
     nextToken(),
+    "Setup",
   );
 
   const agents: Record<string, AgentCredential> = {};
 
   for (const [index, agent] of scenario.agents.entries()) {
     console.log(`Registering account for agent "${agent.id}"...`);
-    const account = await registerAccount(args.baseUrl, agent.id, nextToken());
+    const account = await registerAccount(
+      args.baseUrl,
+      agent.id,
+      nextToken(),
+      agent.persona.displayName,
+    );
 
     const existingAgentCred = existing?.agents?.[agent.id];
     const placeholder = llmPlaceholderFor(index);

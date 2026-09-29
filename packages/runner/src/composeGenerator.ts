@@ -63,6 +63,7 @@ export function generateComposeFile(params: {
         SCENARIO_TOPIC: scenario.topic,
         MATRIX_ROOM_ID: roomId,
         MATRIX_ACCESS_TOKEN: cred.matrixAccessToken,
+        MATRIX_USER_ID: cred.matrixUserId,
         // Containers reach the self-hosted Synapse over the shared infra
         // network, so they use the container-facing base URL, not the host one.
         MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,

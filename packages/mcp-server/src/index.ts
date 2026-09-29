@@ -20,6 +20,10 @@ function extractAccessToken(req: express.Request): string {
   return header.slice("Bearer ".length);
 }
 
+function extractMatrixUserId(req: express.Request): string | undefined {
+  return req.header("x-matrix-user-id");
+}
+
 /**
  * The one room this server ever talks to, read per request so an operator who
  * fixes the variable is fixed for the next tool call, with no restart.
@@ -46,7 +50,7 @@ function runRoomId(): string {
  * agent_id parameter, so one agent can never act as another Matrix user. The
  * room is bound the same way, from the environment rather than the tool call.
  */
-function buildServer(accessToken: string): McpServer {
+function buildServer(accessToken: string, matrixUserId?: string): McpServer {
   const server = new McpServer({ name: "agora-matrix-mcp", version: "0.1.0" });
   const roomId = runRoomId();
 
@@ -58,7 +62,7 @@ function buildServer(accessToken: string): McpServer {
     },
     async ({ limit }) => {
       const client = getMatrixClient(accessToken);
-      const messages = await readRoom(client, roomId, limit);
+      const messages = await readRoom(client, roomId, limit, matrixUserId);
       return { content: [{ type: "text", text: JSON.stringify(messages) }] };
     },
   );
@@ -107,7 +111,8 @@ app.post("/mcp", async (req, res) => {
     return;
   }
 
-  const server = buildServer(accessToken);
+  const matrixUserId = extractMatrixUserId(req);
+  const server = buildServer(accessToken, matrixUserId);
   try {
     // Stateless mode: a fresh server+transport per request. Matrix has no
     // persistent connection to hold, so this costs nothing per tool call.

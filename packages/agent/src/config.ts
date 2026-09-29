@@ -11,6 +11,7 @@ export interface AgentEnvConfig {
   logDir: string;
   mcpUrl: string;
   matrixAccessToken: string;
+  matrixUserId: string;
   llm: { baseUrl: string; apiKey: string; model: string };
   port: number;
 }
@@ -34,6 +35,7 @@ export function loadAgentEnvConfig(): AgentEnvConfig {
     logDir: process.env.LOG_DIR ?? "/logs",
     mcpUrl: requireEnv("MCP_URL"),
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),
+    matrixUserId: requireEnv("MATRIX_USER_ID"),
     llm: {
       baseUrl: requireEnv("LLM_BASE_URL"),
       apiKey: requireEnv("LLM_API_KEY"),

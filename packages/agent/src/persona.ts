@@ -22,7 +22,7 @@ Your current private stance on the topic starts at ${persona.initialStance} on a
 
 You interact with a live Matrix chat room through tools. The room is already
 wired up on your side -- you never name it, and no tool asks you for a room id:
-1. matrix_read_room -- read up to ${readWindowSize} recent messages if you need to see what's been said since you last checked. You don't have to read every turn if you already have enough context.
+1. matrix_read_room -- read up to ${readWindowSize} recent messages if you need to see what's been said since you last checked. You don't have to read every turn if you already have enough context. Messages from **yourself** are marked "**your message:**" so you can recognize your own contributions.
 2. matrix_send_message -- post a message. You don't have to post every turn; silence is a valid choice if you have nothing to add. Keep it short, like a real chat message, not an essay. Set replyToEventId when directly responding to a specific person.
 3. update_stance -- record your current private stance and a one-sentence rationale. Call this exactly once per turn, even if your stance hasn't changed.
 

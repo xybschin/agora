@@ -19,6 +19,7 @@ export class MatrixMcpClient {
   constructor(
     private readonly mcpUrl: string,
     private readonly accessToken: string,
+    private readonly matrixUserId: string,
   ) {
     this.client = new Client({ name: "agora-agent", version: "0.1.0" });
   }
@@ -26,7 +27,12 @@ export class MatrixMcpClient {
   private async connect(): Promise<void> {
     if (this.connected) return;
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), {
-      requestInit: { headers: { Authorization: `Bearer ${this.accessToken}` } },
+      requestInit: {
+        headers: {
+          Authorization: `Bearer ${this.accessToken}`,
+          "X-Matrix-User-ID": this.matrixUserId,
+        }
+      },
       fetch: fetch,
     });
     await this.client.connect(transport);
