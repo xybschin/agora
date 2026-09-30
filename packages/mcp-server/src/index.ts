@@ -17,10 +17,6 @@ function extractAccessToken(req: express.Request): string {
   return header.slice("Bearer ".length);
 }
 
-function extractMatrixUserId(req: express.Request): string | undefined {
-  return req.header("x-matrix-user-id");
-}
-
 /**
  * The one room this server ever talks to, read per request so an operator who
  * fixes the variable is fixed for the next tool call, with no restart.
@@ -44,15 +40,17 @@ function runRoomId(): string {
 /**
  * Builds a fresh McpServer per request, closing over the caller's access
  * token. Identity is bound to the session (Q7 of the design): tools take no
- * agent_id parameter, so one agent can never act as another Matrix user. The
- * room is bound the same way, from the environment rather than the tool call.
+ * agent_id parameter, and readRoom resolves the caller's identity from the
+ * token itself (GET /account/whoami) rather than from any client-supplied
+ * header, so one agent can never act as another Matrix user. The room is bound
+ * the same way, from the environment rather than the tool call.
  */
-function buildServer(accessToken: string, matrixUserId?: string): McpServer {
+function buildServer(accessToken: string): McpServer {
   const server = new McpServer({ name: "agora-matrix-mcp", version: "0.1.0" });
   const roomId = runRoomId();
 
   // One handler per tool, keyed by the catalog name. Each closes over the
-  // caller's token, room, and user id, so identity and room stay bound to the
+  // caller's token and room, so identity and room stay bound to the
   // session (Q7 of the design): tools take no agent_id or room_id parameter.
   const handlers: Record<
     string,
@@ -60,7 +58,7 @@ function buildServer(accessToken: string, matrixUserId?: string): McpServer {
   > = {
     matrix_read_room: async ({ limit }) => {
       const client = getMatrixClient(accessToken);
-      const messages = await readRoom(client, roomId, limit, matrixUserId);
+      const messages = await readRoom(client, roomId, limit);
       return { content: [{ type: "text", text: JSON.stringify(messages) }] };
     },
     matrix_send_message: async ({ content, replyToEventId }) => {
@@ -105,8 +103,7 @@ app.post("/mcp", async (req, res) => {
     return;
   }
 
-  const matrixUserId = extractMatrixUserId(req);
-  const server = buildServer(accessToken, matrixUserId);
+  const server = buildServer(accessToken);
   try {
     // Stateless mode: a fresh server+transport per request. Matrix has no
     // persistent connection to hold, so this costs nothing per tool call.

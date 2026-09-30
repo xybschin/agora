@@ -1,4 +1,86 @@
-import { describe, test, expect } from "bun:test";
+import { afterEach, describe, test, expect } from "bun:test";
+
+interface FetchCall {
+  url: string;
+  method: string | undefined;
+  authorization: string | undefined;
+}
+
+const restoreFetch: Array<() => void> = [];
+
+afterEach(() => {
+  while (restoreFetch.length > 0) restoreFetch.pop()!();
+  delete process.env.MATRIX_HOME_SERVER_URL;
+});
+
+/**
+ * Replaces global fetch with a recorder, so we can assert both that whoami is
+ * reached and that every call is authenticated with the agent's own token. This
+ * mirrors the runner's matrixRooms.test.ts seam: the identity fix is proven at
+ * the readRoom boundary, where the token decides identity.
+ */
+function recordFetch(
+  respond: (call: FetchCall) => Response = () =>
+    new Response("{}", { status: 200 }),
+): FetchCall[] {
+  const calls: FetchCall[] = [];
+  const original = globalThis.fetch;
+  type FetchFn = typeof globalThis.fetch;
+  const recorder = (async (
+    input: Parameters<FetchFn>[0],
+    init?: Parameters<FetchFn>[1],
+  ) => {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    const call: FetchCall = {
+      url: String(input),
+      method: init?.method,
+      authorization: headers["Authorization"],
+    };
+    calls.push(call);
+    return respond(call);
+  }) as FetchFn;
+  globalThis.fetch = recorder;
+  restoreFetch.push(() => {
+    globalThis.fetch = original;
+  });
+  return calls;
+}
+
+/** Responds to the three homeserver calls readRoom makes, driven by one token-owned id. */
+function matrixResponder(ownId: string) {
+  return (call: FetchCall): Response => {
+    if (call.url.includes("/account/whoami")) {
+      return new Response(JSON.stringify({ user_id: ownId }), { status: 200 });
+    }
+    if (call.url.includes("/joined_members")) {
+      return new Response(JSON.stringify({ joined: {} }), { status: 200 });
+    }
+    if (call.url.includes("/messages")) {
+      return new Response(
+        JSON.stringify({
+          chunk: [
+            {
+              event_id: "$self",
+              sender: ownId,
+              type: "m.room.message",
+              content: { msgtype: "m.text", body: "hi from self" },
+              origin_server_ts: 1,
+            },
+            {
+              event_id: "$other",
+              sender: "@carol:localhost",
+              type: "m.room.message",
+              content: { msgtype: "m.text", body: "hi from carol" },
+              origin_server_ts: 2,
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  };
+}
 
 /**
  * Tests for agent identity resolution in Matrix room messages.
@@ -102,5 +184,51 @@ describe("stance continuity across ticks", () => {
       expect(prompt).toContain(`Your current private stance on the topic is ${stance}`);
       expect(prompt).not.toContain("(you started at"); // No reminder on non-first ticks
     }
+  });
+});
+
+describe("identity is resolved from the access token, not a client header (agora-2ja)", () => {
+  test("readRoom reaches /account/whoami with the agent's own token", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
+
+    const calls = recordFetch(matrixResponder("@agora-alex:localhost"));
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
+
+    const whoami = calls.find((c) => c.url.includes("/account/whoami"));
+    expect(whoami).toBeDefined();
+    // The token is the only authentication; whoami must be called with it.
+    expect(whoami?.authorization).toBe("Bearer syt_alex");
+
+    // The token's owner is the only identity known to readRoom: its own message
+    // is marked, and another user's is not, no matter what a caller asserts.
+    const self = messages.find((m) => m.sender === "@agora-alex:localhost")!;
+    const other = messages.find((m) => m.sender === "@carol:localhost")!;
+    expect(self.content).toContain("**your message:**");
+    expect(other.content).not.toContain("**your message:**");
+  });
+
+  test("a forged-reader's identity can never be asserted at the read boundary: only the token's id is marked", async () => {
+    // The vulnerability this guard exists to close: an agent holding its own
+    // token must not be able to get another agent's messages marked as its own,
+    // or its own marked as someone else's. Identity comes from the token alone.
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
+
+    // Bob's token resolves to Bob; only Bob's message is marked "your message:".
+    const calls = recordFetch(matrixResponder("@bob:localhost"));
+    const messages = await readRoom(getMatrixClient("syt_bob"), "!room:localhost", 10);
+
+    const bob = messages.find((m) => m.sender === "@bob:localhost")!;
+    const carol = messages.find((m) => m.sender === "@carol:localhost")!;
+    expect(bob.content).toContain("**your message:**");
+    // The message sent by the other agent is never the caller's own.
+    expect(carol.content).not.toContain("**your message:**");
+    // And the id was learned from the token, not from any client-supplied value.
+    expect(calls.find((c) => c.url.includes("/account/whoami"))?.authorization).toBe(
+      "Bearer syt_bob",
+    );
   });
 });

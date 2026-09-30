@@ -68,12 +68,28 @@ async function csRequest<T>(
   return (await response.json()) as T;
 }
 
+/**
+ * Resolve the caller's own user id from their access token, not from anything a
+ * client asserts. readRoom needs to know which messages are the agent's own, and
+ * the only trustworthy source of that is the homeserver's answer for the token
+ * (GET /account/whoami): an access token is what Matrix binds identity to, and a
+ * client-supplied id can be forged, so `readRoom` resolves it here rather than
+ * taking it as a parameter. This is the guarantee that one agent can never have
+ * another's messages marked as its own, or its own marked as someone else's.
+ */
+export async function resolveOwnUserId(client: MatrixClient): Promise<string> {
+  const data = await csRequest<{ user_id?: string }>(client, "GET", "/account/whoami");
+  if (!data.user_id) {
+    throw new Error("Matrix GET /account/whoami returned no user_id");
+  }
+  return data.user_id;
+}
+
 /** Read the most recent messages in a room, oldest of the fetched first. */
 export async function readRoom(
   client: MatrixClient,
   roomId: string,
   limit: number,
-  ownMatrixUserId?: string,
 ): Promise<RoomMessage[]> {
   const params = new URLSearchParams({
     dir: "b", // backward: newest first
@@ -100,6 +116,10 @@ export async function readRoom(
   } catch {
     // If joined_members fails, fall back to user IDs
   }
+
+  // Identity comes from the token, never from a client-supplied value, so own
+  // messages are recognised by who the homeserver says the token belongs to.
+  const ownMatrixUserId = await resolveOwnUserId(client);
 
   const messages = (data.chunk ?? [])
     .filter((event) => {
