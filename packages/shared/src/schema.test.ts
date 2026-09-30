@@ -123,6 +123,71 @@ describe("parseCredentialsFile", () => {
       }),
     ).toThrow();
   });
+
+  test("reports a missing matrixUserId as a readable per-agent error", () => {
+    // A credentials.yaml written before per-agent matrixUserId existed is an
+    // otherwise-valid modern file that lacks the field, and zod's raw
+    // "expected string, received undefined" error tells the user nothing about
+    // what to add or how. The loader must instead surface a single readable
+    // error naming the agent and the missing field, explaining it is a
+    // required per-agent field, and pointing at the bootstrap tool that writes
+    // a complete entry.
+    const missing = {
+      ...matrixCredentials,
+      agents: {
+        alex: {
+          // deliberately no matrixUserId
+          matrixAccessToken: "syt_alex",
+          llmBaseUrl: "https://example.com/v1",
+          llmApiKey: "sk-test",
+          llmModel: "deepseek-v4-flash-sovereign",
+        },
+      },
+    };
+    expect(() => parseCredentialsFile(missing)).toThrow(
+      'Agent "alex" in the credentials file is missing the required per-agent field "matrixUserId"',
+    );
+    try {
+      parseCredentialsFile(missing);
+    } catch (err) {
+      const message = (err as Error).message;
+      expect(message).toContain('Agent "alex"');
+      expect(message).toContain("matrixUserId");
+      expect(message).toContain("required per-agent field");
+      // Points at the canonical writer of a complete entry.
+      expect(message).toContain("matrixBootstrap.ts");
+    }
+  });
+
+  test("a file that fails for an unrelated reason keeps zod's own error", () => {
+    // The readable translation is reserved for the missing recently-introduced
+    // field being the *entire* problem. A file that is wrong in some other way
+    // -- here an agent also missing llmApiKey -- must still surface the raw
+    // validator error, not a misleading single-line message about matrixUserId.
+    const alsoMissingLlmApiKey = {
+      ...matrixCredentials,
+      agents: {
+        alex: {
+          matrixAccessToken: "syt_alex",
+          matrixUserId: "@agora-alex:localhost",
+          llmBaseUrl: "https://example.com/v1",
+          // deliberately no llmApiKey
+          llmModel: "deepseek-v4-flash-sovereign",
+        },
+      },
+    };
+    expect(() => parseCredentialsFile(alsoMissingLlmApiKey)).toThrowError(
+      "Invalid input",
+    );
+    try {
+      parseCredentialsFile(alsoMissingLlmApiKey);
+    } catch (err) {
+      // Not the readable missing-field message.
+      expect((err as Error).message).not.toContain(
+        "in the credentials file is missing the required per-agent field",
+      );
+    }
+  });
 });
 
 function agent(id: string) {
