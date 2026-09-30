@@ -1,4 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { AgentDefinition } from "@agora/shared";
 import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 
@@ -51,6 +54,15 @@ function stanceCall(): ToolCall {
       name: "update_stance",
       arguments: JSON.stringify({ stance: 0, rationale: "no change" }),
     },
+  };
+}
+
+/** A bare update_stance call whose arguments can be made malformed on purpose. */
+function rawStanceCall(argumentsJson: string): ToolCall {
+  return {
+    id: "call_stance",
+    type: "function",
+    function: { name: "update_stance", arguments: argumentsJson },
   };
 }
 
@@ -421,5 +433,122 @@ describe("AgentRuntime new-message tracking", () => {
     const runtime = makeRuntime();
     await runtime.runTick(1, 5);
     expect(runtime.getLastTickMessage()).toContain("Nothing new since your last turn.");
+  });
+});
+
+describe("AgentRuntime update_stance malformed-argument guard", () => {
+  // Distinct non-zero prior so "preserved" is observable and distinguishable
+  // from a fresh seed or from NaN.
+  const PRIOR = 0.4;
+  const stancedAgent: AgentDefinition = {
+    id: "alice",
+    persona: {
+      displayName: "Alice",
+      flavorText: "Careful and measured.",
+      traits: { conformity: 0.5, assertiveness: 0.5, opennessToEvidence: 0.5 },
+      initialStance: PRIOR,
+    },
+  };
+
+  // Drives the real runtime (appendEvent not mocked) writing to a throwaway
+  // logDir per run, then reads back the stance events it recorded so the test
+  // asserts on the actual transcript/event stream, not on a stub.
+  async function stanceEventsAfter(script_: Array<ScriptedMessage>) {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-stance-guard-"));
+    script = script_;
+    mcp.callTool = async () => "{}";
+    const runtime = makeRuntime({ logDir, agentDef: stancedAgent });
+    await runtime.runTick(1, 5);
+    const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
+    return {
+      runtime,
+      events: raw
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { type: string; stance: number; rationale?: string }),
+    };
+  }
+
+  test("non-numeric stance ('abc') preserves the prior stance and never corrupts it to NaN", async () => {
+    const { runtime, events } = await stanceEventsAfter([
+      assistant([rawStanceCall(JSON.stringify({ stance: "abc", rationale: "should not apply" }))]),
+      assistant(),
+    ]);
+
+    // The persisted, per-tick stance is unchanged (prior value), not NaN.
+    expect(runtime.getStance()).toBe(PRIOR);
+    expect(Number.isNaN(runtime.getStance())).toBe(false);
+
+    // The dropped update is recorded in the event stream as carried over, not
+    // silently dropped, and never records NaN.
+    const stanceEvents = events.filter((e) => e.type === "stance");
+    expect(stanceEvents).toHaveLength(1);
+    const recorded = stanceEvents[0]!;
+    expect(recorded.stance).toBe(PRIOR);
+    expect(recorded.rationale).toContain("invalid");
+    expect(recorded.rationale).toContain("carried over");
+    expect(Number.isNaN(recorded.stance)).toBe(false);
+  });
+
+  test("a prior valid stance endures a malformed call and the prompt stays NaN-free", async () => {
+    const { runtime } = await stanceEventsAfter([
+      // Tick 1: a valid move to 0.8.
+      assistant([rawStanceCall(JSON.stringify({ stance: 0.8 }))]),
+      assistant(),
+    ]);
+    expect(runtime.getStance()).toBe(0.8);
+
+    // Now drive another real tick in which the model emits a malformed stance.
+    // The prior 0.8 (not NaN) must survive, and the system prompt rendered from
+    // that persisted stance must not leak "NaN".
+    script = [assistant([rawStanceCall(JSON.stringify({ stance: "0.5x" }))]), assistant()];
+    await runtime.runTick(2, 5);
+
+    expect(runtime.getStance()).toBe(0.8);
+    const prompt = buildSystemPrompt({
+      persona: stancedAgent.persona,
+      topic: "Should the speed limit change?",
+      readWindowSize: 20,
+      currentStance: runtime.getStance(),
+      isFirstTick: false,
+      ownMessageHistory: [],
+    });
+    expect(prompt).toContain("private stance on the topic is 0.8");
+    expect(prompt).not.toContain("NaN");
+  });
+
+  test("a finite out-of-range stance is still clamped to [-1, 1]", async () => {
+    const { runtime } = await stanceEventsAfter([
+      assistant([rawStanceCall(JSON.stringify({ stance: 5 }))]),
+      assistant(),
+    ]);
+    expect(runtime.getStance()).toBe(1);
+
+    const { runtime: neg } = await stanceEventsAfter([
+      assistant([rawStanceCall(JSON.stringify({ stance: -7 }))]),
+      assistant(),
+    ]);
+    expect(neg.getStance()).toBe(-1);
+  });
+
+  test("valid numeric stance inside range records as given", async () => {
+    const { runtime } = await stanceEventsAfter([
+      assistant([rawStanceCall(JSON.stringify({ stance: -0.5, rationale: "leaning against" }))]),
+      assistant(),
+    ]);
+    expect(runtime.getStance()).toBe(-0.5);
+  });
+
+  test("empty-string stance is handled by the finite-number guard (Number('') is 0), not by emptiness", async () => {
+    // Number("") is 0 -- a finite number -- so it records as 0 under the
+    // finite-number guard, rather than being rejected because it is empty or
+    // corrupting the stance. This pins the "finite-number check, not emptiness"
+    // requirement from the brief.
+    const { runtime } = await stanceEventsAfter([
+      assistant([rawStanceCall(JSON.stringify({ stance: "" }))]),
+      assistant(),
+    ]);
+    expect(runtime.getStance()).toBe(0);
+    expect(Number.isNaN(runtime.getStance())).toBe(false);
   });
 });
