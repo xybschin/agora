@@ -255,18 +255,45 @@ export class AgentRuntime {
         let resultText: string;
 
         if (call.function.name === "update_stance") {
-          this.currentStance = Math.max(-1, Math.min(1, Number(args.stance)));
+          // Defense-in-depth: the model's args are parsed loosely (a malformed
+          // call must not drop the tick), so the stance value reaching here may
+          // not be a number. Guard on a finite-number check -- NOT on emptiness
+          // (Number("") is 0, not NaN) -- so a bad argument can never poison the
+          // agent's persistent private stance into NaN, which would otherwise
+          // leak "your current private stance ... is NaN" into every later
+          // system prompt. A finite numeric stance is clamped to [-1, 1] as
+          // before; anything else keeps the prior stance and records that the
+          // update was invalid, so a one-off bad call cannot corrupt a run.
           calledStanceTool = true;
-          await appendEvent(logDir, runId, {
-            type: "stance",
-            runId,
-            tick,
-            agentId,
-            stance: this.currentStance,
-            rationale: typeof args.rationale === "string" ? args.rationale : undefined,
-            timestamp: new Date().toISOString(),
-          });
-          resultText = "stance recorded";
+          const rawStance = Number(args.stance);
+          if (Number.isFinite(rawStance)) {
+            this.currentStance = Math.max(-1, Math.min(1, rawStance));
+            await appendEvent(logDir, runId, {
+              type: "stance",
+              runId,
+              tick,
+              agentId,
+              stance: this.currentStance,
+              rationale: typeof args.rationale === "string" ? args.rationale : undefined,
+              timestamp: new Date().toISOString(),
+            });
+            resultText = "stance recorded";
+          } else {
+            // Non-finite (e.g. "abc", "0.5x") or null/undefined: leave the prior
+            // stance untouched and record the drop explicitly rather than
+            // silently, so the transcript shows the stance was carried over.
+            const prior = this.currentStance;
+            await appendEvent(logDir, runId, {
+              type: "stance",
+              runId,
+              tick,
+              agentId,
+              stance: prior,
+              rationale: "carried over -- update_stance called with an invalid (non-numeric) stance; not applied",
+              timestamp: new Date().toISOString(),
+            });
+            resultText = `invalid stance (${String(args.stance)}) not applied; stance remains ${prior}`;
+          }
         } else {
           resultText = await mcp.callTool(call.function.name, args);
           if (call.function.name === "matrix_send_message") {
