@@ -23,6 +23,49 @@ export interface TickResult {
   usage: { promptTokens: number; completionTokens: number };
 }
 
+export interface TickMessageParams {
+  /** The current tick, 1-based (N). */
+  tick: number;
+  /** The total number of ticks in the Run (M). */
+  totalTicks: number;
+  /** Room messages that arrived since the agent's last turn; 0 = nothing new. */
+  newMessages: number;
+  /** The agent's most recent own post, if any, quoted so it is not restated. */
+  ownLastMessage?: string;
+}
+
+/**
+ * Builds the per-tick user message that replaces the frozen "Tick N: it is
+ * your turn" (mechanism C: no news in per-tick prompts). Carries the three
+ * deltas the turn should act on -- where we are in the Run, what arrived since
+ * the last turn, and what the agent itself last said so it does not restate it
+ * -- instead of an invitation that reads identically every tick.
+ *
+ * Kept short (a hard cap around 200 chars): the news is context for the turn,
+ * not the conversation itself, and a long preamble would crowd the model's
+ * budget for the room it reads afterwards.
+ */
+export function buildTickMessage({
+  tick,
+  totalTicks,
+  newMessages,
+  ownLastMessage,
+}: TickMessageParams): string {
+  const head = `Tick ${tick} of ${totalTicks}.`;
+  const news =
+    newMessages <= 0
+      ? ` Nothing new since your last turn.`
+      : ` ${newMessages} new message${newMessages === 1 ? "" : "s"} since your last turn.`;
+  // Quote only the first line of a multi-line own post, truncated so the whole
+  // message stays short. The full text is already quoted in the system prompt
+  // (buildSystemPrompt); here a compact marker is enough to say "you said this,
+  // don't repeat it" without letting one long post blow past the length cap.
+  const lastLine = ownLastMessage?.split("\n")[0] ?? "";
+  const quote = lastLine.length > 80 ? `${lastLine.slice(0, 80)}…` : lastLine;
+  const own = ownLastMessage != null ? ` You already said: "${quote}". Don't restate it.` : "";
+  return `${head}${news}${own}`.trim();
+}
+
 /**
  * How many of the agent's own successfully posted messages the runtime keeps to
  * remind it not to restate them (mechanism C of the repetition investigation:
@@ -31,6 +74,15 @@ export interface TickResult {
  * a longer list would crowd the prompt for little gain.
  */
 const OWN_MESSAGE_HISTORY_MAX = 3;
+
+/**
+ * The limit the runtime requests when counting room messages for the per-tick
+ * news (see countRoomMessages): the tool's maximum, so the count is a measure
+ * of total room growth rather than a value capped at a short window. Mirrors
+ * matrixReadRoomSchema's max; kept separate so the two intents can drift
+ * independently.
+ */
+const ROOM_COUNT_LIMIT = 100;
 
 const STANCE_TOOL: ToolSpec = {
   type: "function",
@@ -67,6 +119,40 @@ export class AgentRuntime {
    */
   private ownMessageHistory: string[] = [];
 
+  /**
+   * The room's message count as of the last tick's start, as observed by the
+   * runtime's own light read (see countRoomMessages). The delta between this
+   * and the count at the current tick's start is what runTick reports as "new
+   * since your last turn". Tick 1 has no prior turn, so it reports nothing new.
+   */
+  private lastTurnStartCount = 0;
+
+  /**
+   * Best-effort count of messages currently in the room, via one matrix_read_room
+   * issued by the runtime itself (not the model) so the per-tick message can say
+   * "new since your last turn" about messages the agent has not seen yet.
+   *
+   * Requests the tool's maximum limit (100, the schema cap) rather than the
+   * model's read window so the count tracks the room's *actual* growth instead
+   * of saturating at a short window: the news is "N messages arrived since your
+   * last turn", independent of how much the model chooses to read.
+   *
+   * Deliberately never throws: the news is a nicety, not a reason to lose a
+   * turn. Any failure -- homeserver hiccup, malformed response -- degrades to
+   * "no new messages", keeping silent no-op ticks valid.
+   */
+  private async countRoomMessages(): Promise<number | null> {
+    try {
+      const resultText = await this.config.mcp.callTool("matrix_read_room", {
+        limit: ROOM_COUNT_LIMIT,
+      });
+      const parsed = JSON.parse(resultText) as unknown;
+      return Array.isArray(parsed) ? parsed.length : null;
+    } catch {
+      return null;
+    }
+  }
+
   constructor(private readonly config: AgentRuntimeConfig) {
     this.currentStance = config.agentDef.persona.initialStance;
   }
@@ -80,12 +166,27 @@ export class AgentRuntime {
     return this.ownMessageHistory;
   }
 
-  async runTick(tick: number): Promise<TickResult> {
+  /** The per-tick user message most recently built. Exposed for tests. */
+  private lastTickMessage = "";
+  /** Exposed for tests. */
+  getLastTickMessage(): string {
+    return this.lastTickMessage;
+  }
+
+  async runTick(tick: number, totalTicks: number): Promise<TickResult> {
     const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, memoryWindowSize, logDir, mcp, llm } =
       this.config;
 
     const mcpTools = await mcp.listToolSpecs();
     const tools = [...mcpTools, STANCE_TOOL];
+
+    // The runtime counts messages itself (rather than depending on whether the
+    // model happens to read) so the per-tick news is timely, not stale. The
+    // count feeds newMessages below; an unreadable room silently yields
+    // "nothing new" rather than failing the tick.
+    const currentCount = await this.countRoomMessages();
+    const newMessages =
+      tick === 1 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
 
     const messages: ChatMessage[] = [
       {
@@ -101,9 +202,19 @@ export class AgentRuntime {
       },
       {
         role: "user",
-        content: `Tick ${tick}: it is your turn.`,
+        content: buildTickMessage({
+          tick,
+          totalTicks,
+          newMessages,
+          ownLastMessage: this.ownMessageHistory[this.ownMessageHistory.length - 1],
+        }),
       },
     ];
+    this.lastTickMessage = (messages[1] as { content: string }).content;
+    // Seal the count this turn started at, so the next tick reports exactly what
+    // arrived between turns. On a failed read keep the previous baseline (no
+    // news rather than an invented jump).
+    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
 
     let calledStanceTool = false;
     let totalPromptTokens = 0;

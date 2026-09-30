@@ -33,8 +33,12 @@ app.post("/tick", async (req, res) => {
     res.status(400).json({ ok: false, error: 'body must include integer "tick"' });
     return;
   }
+  // The Run's total tick count (the Scenario's `ticks`), sent per-tick by the
+  // runner so the agent can ground "tick N of M". Optional: a request that
+  // omits it (e.g. a health probe or a hand-driven tick) degrades to tick == M.
+  const totalTicks = Number(req.body?.totalTicks ?? tick);
   try {
-    const result = await runtime.runTick(tick);
+    const result = await runtime.runTick(tick, totalTicks);
     res.json({ ok: true, agentId: env.agentId, tick, ...result });
   } catch (err) {
     console.error(`[${env.agentId}] tick ${tick} failed:`, err);

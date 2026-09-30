@@ -22,7 +22,7 @@ mock.module("./llm.js", () => ({
   },
 }));
 
-const { AgentRuntime } = await import("./loop.js");
+const { AgentRuntime, buildTickMessage } = await import("./loop.js");
 const { buildSystemPrompt } = await import("./persona.js");
 
 const AGENT: AgentDefinition = {
@@ -96,7 +96,7 @@ describe("AgentRuntime own message history", () => {
     mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
-    await runtime.runTick(1);
+    await runtime.runTick(1, 5);
 
     expect(runtime.getOwnMessageHistory()).toEqual(["I think a 30 limit is right"]);
   });
@@ -110,7 +110,7 @@ describe("AgentRuntime own message history", () => {
     };
 
     const runtime = makeRuntime();
-    await expect(runtime.runTick(1)).rejects.toThrow();
+    await expect(runtime.runTick(1, 5)).rejects.toThrow();
     expect(runtime.getOwnMessageHistory()).toEqual([]);
   });
 
@@ -125,7 +125,7 @@ describe("AgentRuntime own message history", () => {
     });
 
     // Only alice drives a tick; bob never posts and must not see her memory.
-    await alice.runTick(1);
+    await alice.runTick(1, 5);
 
     expect(alice.getOwnMessageHistory()).toEqual(["Alice posts"]);
     expect(bob.getOwnMessageHistory()).toEqual([]);
@@ -139,7 +139,7 @@ describe("AgentRuntime own message history", () => {
     // architecture each Run's compose stack is brought up separately), so it
     // must begin with an empty queue even though an earlier Run posted.
     const run1 = makeRuntime({ runId: "scenario-20260101-0100" });
-    await run1.runTick(1);
+    await run1.runTick(1, 5);
     expect(run1.getOwnMessageHistory()).toHaveLength(1);
 
     const run2 = makeRuntime({ runId: "scenario-20260101-0200" });
@@ -157,7 +157,7 @@ describe("AgentRuntime own message history", () => {
     mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
-    await runtime.runTick(1);
+    await runtime.runTick(1, 5);
 
     expect(runtime.getOwnMessageHistory()).toEqual(["two", "three", "four"]);
   });
@@ -193,5 +193,123 @@ describe("buildSystemPrompt own-message section", () => {
     expect(prompt).toContain("> First line.\n> Second line.");
     // The bare continuation line must not appear as prompt instructions.
     expect(prompt).toContain("> Second line.");
+  });
+});
+
+describe("buildTickMessage", () => {
+  test("tick 1 with nothing new carries head and no-news clause", () => {
+    const msg = buildTickMessage({ tick: 1, totalTicks: 7, newMessages: 0 });
+    expect(msg).toContain("Tick 1 of 7.");
+    expect(msg).toContain("Nothing new since your last turn.");
+  });
+
+  test("final tick keeps the same shape", () => {
+    const msg = buildTickMessage({ tick: 7, totalTicks: 7, newMessages: 2 });
+    expect(msg).toContain("Tick 7 of 7.");
+    expect(msg).toContain("2 new messages since your last turn.");
+  });
+
+  test("singular new-message wording for a single new message", () => {
+    const msg = buildTickMessage({ tick: 3, totalTicks: 5, newMessages: 1 });
+    expect(msg).toContain("1 new message since your last turn.");
+  });
+
+  test("quotes the agent's own last message and says not to restate it", () => {
+    const msg = buildTickMessage({
+      tick: 4,
+      totalTicks: 6,
+      newMessages: 3,
+      ownLastMessage: "I think 30 is the right cap",
+    });
+    expect(msg).toContain('You already said: "I think 30 is the right cap".');
+    expect(msg).toContain("Don't restate it.");
+  });
+
+  test("quotes only the first line of a multi-line own post", () => {
+    const msg = buildTickMessage({
+      tick: 2,
+      totalTicks: 4,
+      newMessages: 1,
+      ownLastMessage: "First line.\nSecond line.",
+    });
+    expect(msg).toContain('"First line."');
+    expect(msg).not.toContain("Second line.");
+  });
+
+  test("omits the own-message clause when the agent has posted nothing", () => {
+    const msg = buildTickMessage({ tick: 1, totalTicks: 5, newMessages: 0 });
+    expect(msg).not.toContain("already said");
+  });
+
+  test("stays under 200 chars even with a quoted last message", () => {
+    const msg = buildTickMessage({
+      tick: 12,
+      totalTicks: 12,
+      newMessages: 9,
+      ownLastMessage: "A fairly long message that the agent has already posted and should not restate.",
+    });
+    expect(msg.length).toBeLessThan(200);
+  });
+
+  test("truncates an over-long own last message so the tick message stays short", () => {
+    const veryLong = "x".repeat(500);
+    const msg = buildTickMessage({ tick: 1, totalTicks: 3, newMessages: 1, ownLastMessage: veryLong });
+    expect(msg.length).toBeLessThan(200);
+    expect(msg).toContain("…");
+  });
+});
+
+describe("AgentRuntime new-message tracking", () => {
+  test("reports messages that arrived between turns as new", async () => {
+    // The runtime counts the room itself at the start of each tick. Tick 1
+    // starts a fresh run, so it reports nothing new; 3 messages arrive before
+    // tick 2, and its message reports 3 new.
+    let reads = 0;
+    mcp.callTool = async (name: string) => {
+      if (name !== "matrix_read_room") return "{}";
+      reads += 1;
+      return reads === 1
+        ? JSON.stringify([{}, {}, {}, {}])
+        : JSON.stringify([{}, {}, {}, {}, {}, {}, {}]);
+    };
+
+    // The model needn't read for the news to be counted; give it a no-op turn.
+    script = [assistant([stanceCall()]), assistant(), assistant([stanceCall()]), assistant()];
+
+    const runtime = makeRuntime();
+    await runtime.runTick(1, 5);
+    expect(runtime.getLastTickMessage()).toContain("Nothing new since your last turn.");
+
+    await runtime.runTick(2, 5);
+    expect(runtime.getLastTickMessage()).toContain("3 new messages since your last turn.");
+    expect(runtime.getLastTickMessage()).toContain("Tick 2 of 5.");
+  });
+
+  test("single new message uses singular wording", async () => {
+    let reads = 0;
+    mcp.callTool = async (name: string) => {
+      if (name !== "matrix_read_room") return "{}";
+      reads += 1;
+      return reads === 1 ? "[]" : JSON.stringify([{}]);
+    };
+
+    script = [assistant([stanceCall()]), assistant(), assistant([stanceCall()]), assistant()];
+
+    const runtime = makeRuntime();
+    await runtime.runTick(1, 5);
+    await runtime.runTick(2, 5);
+    expect(runtime.getLastTickMessage()).toContain("1 new message since your last turn.");
+  });
+
+  test("an unreadable room degrades to nothing new without failing the tick", async () => {
+    mcp.callTool = async (name: string) => {
+      // Both the count-read and any send fail catastrophically.
+      throw new Error("homeserver unreachable");
+    };
+    script = [assistant([stanceCall()]), assistant()];
+
+    const runtime = makeRuntime();
+    await runtime.runTick(1, 5);
+    expect(runtime.getLastTickMessage()).toContain("Nothing new since your last turn.");
   });
 });

@@ -79,7 +79,9 @@ export async function runTicks(params: {
         const res = await fetch(`http://localhost:${port}/tick`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tick }),
+          // totalTicks lets the agent ground "tick N of M" in its per-tick
+          // message; the runner owns the Scenario's tick count.
+          body: JSON.stringify({ tick, totalTicks: scenario.ticks }),
         });
         return (await res.json()) as TickResponse;
       }),
