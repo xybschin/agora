@@ -105,13 +105,16 @@ export async function readRoom(
   // Fetch member list to resolve displaynames
   let memberMap: Record<string, string> = {};
   try {
-    const membersData = await csRequest<{ joined: Record<string, { content: { displayname?: string } }> }>(
+    // /joined_members returns a flat member object per user ({ display_name,
+    // avatar_url }) — not the state-event `content` shape — so read the flat
+    // display_name field. See agora-ber.
+    const membersData = await csRequest<{ joined: Record<string, { display_name?: string }> }>(
       client,
       "GET",
       `/rooms/${encodeURIComponent(roomId)}/joined_members`,
     );
     for (const [userId, member] of Object.entries(membersData.joined ?? {})) {
-      memberMap[userId] = member.content?.displayname ?? userId;
+      memberMap[userId] = member.display_name ?? userId;
     }
   } catch {
     // If joined_members fails, fall back to user IDs
