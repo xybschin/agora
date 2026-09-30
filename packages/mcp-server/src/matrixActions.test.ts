@@ -53,7 +53,18 @@ function matrixResponder(ownId: string) {
       return new Response(JSON.stringify({ user_id: ownId }), { status: 200 });
     }
     if (call.url.includes("/joined_members")) {
-      return new Response(JSON.stringify({ joined: {} }), { status: 200 });
+      // Spec-shaped /joined_members: a FLAT member object per user with
+      // display_name (no `content` wrapper). A populated map lets readRoom's
+      // display-name lookup actually execute. See agora-ber.
+      return new Response(
+        JSON.stringify({
+          joined: {
+            [ownId]: { display_name: "Alex Danvers", avatar_url: undefined },
+            "@carol:localhost": { display_name: "Carol Danvers", avatar_url: undefined },
+          },
+        }),
+        { status: 200 },
+      );
     }
     if (call.url.includes("/messages")) {
       return new Response(
@@ -230,5 +241,70 @@ describe("identity is resolved from the access token, not a client header (agora
     expect(calls.find((c) => c.url.includes("/account/whoami"))?.authorization).toBe(
       "Bearer syt_bob",
     );
+  });
+
+  test("senderDisplayName resolves display_name from the flat /joined_members object (agora-ber)", async () => {
+    // The bug: readRoom read member.content?.displayname (the state-event shape),
+    // but /joined_members returns a flat { display_name } per user -- so display
+    // names always fell back to the raw user id. The seam now returns a populated
+    // flat map, so this test proves the lookup executes and lands on the name.
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
+
+    recordFetch(matrixResponder("@agora-alex:localhost"));
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
+
+    const self = messages.find((m) => m.sender === "@agora-alex:localhost")!;
+    const carol = messages.find((m) => m.sender === "@carol:localhost")!;
+    expect(carol.senderDisplayName).toBe("Carol Danvers");
+    expect(self.senderDisplayName).toBe("Alex Danvers");
+  });
+
+  test("a member with no display_name falls back to the raw user id (agora-ber)", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
+
+    // A member present in the room with no display_name must not produce
+    // "undefined" -- it falls back to the user id.
+    const noNameResponder = (call: FetchCall): Response => {
+      if (call.url.includes("/account/whoami")) {
+        return new Response(JSON.stringify({ user_id: "@agora-alex:localhost" }), {
+          status: 200,
+        });
+      }
+      if (call.url.includes("/joined_members")) {
+        return new Response(
+          JSON.stringify({
+            joined: { "@agora-alex:localhost": { avatar_url: undefined } },
+          }),
+          { status: 200 },
+        );
+      }
+      if (call.url.includes("/messages")) {
+        return new Response(
+          JSON.stringify({
+            chunk: [
+              {
+                event_id: "$self",
+                sender: "@agora-alex:localhost",
+                type: "m.room.message",
+                content: { msgtype: "m.text", body: "hi" },
+                origin_server_ts: 1,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    };
+
+    recordFetch(noNameResponder);
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
+
+    const self = messages.find((m) => m.sender === "@agora-alex:localhost")!;
+    expect(self.senderDisplayName).toBe("@agora-alex:localhost");
   });
 });
