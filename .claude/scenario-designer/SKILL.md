@@ -30,7 +30,7 @@ your job is the design.
 ```sh
 # 1. draft the scenario as JSON, e.g. /tmp/<name>.json (a ScenarioConfig object)
 # 2. validate + render:
-bun .claude/skills/scenario-designer/scripts/validate.mts /tmp/<name>.json
+bun .claude/scenario-designer/scripts/validate.mts /tmp/<name>.json
 # writes scenarios/<name>.yaml on success; prints schema/design errors and exits 1 otherwise
 ```
 
