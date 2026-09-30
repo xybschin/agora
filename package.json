@@ -9,7 +9,8 @@
     "typecheck": "bun run --filter '*' typecheck",
     "setup:matrix": "docker compose -f docker-compose.infra.yml up -d --force-recreate",
     "bootstrap:matrix": "bun run packages/runner/src/matrixBootstrap.ts",
-    "run:scenario": "bun run packages/runner/src/index.ts"
+    "run:scenario": "bun run packages/runner/src/index.ts",
+    "reclaim:runs": "bun run packages/runner/src/reclaim.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

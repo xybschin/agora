@@ -99,6 +99,22 @@ bootstrap the accounts once, then run as many times as you like.
 Per-run JSONL logs land in `logs/<runId>/events.jsonl` (message, stance, and
 usage events).
 
+### Reclaiming a finished Run
+
+Artefacts are kept forever by default. Nothing is auto-expired, and nothing
+deletes during a Run. When you want to reclaim a specific finished Run's room
+and/or logs, do so explicitly (see ADR-0006):
+
+```sh
+bun run packages/runner/src/reclaim.ts <runId> --room --logs
+```
+
+This removes `logs/<runId>/` off disk and deletes the Run's Matrix room
+(resolved by its `Agora - <scenario> - <runId>` name). It refuses any Run whose
+transcript has no terminal event (`incomplete`), because that is the ambiguous
+case. Without a target (`--room` and/or `--logs`) it does nothing. Use
+`--all-eligible` instead of a runId to select every completed/aborted Run.
+
 ### Watching a Run live
 
 A Scenario can name human **Readers** in an optional `observers` list -- Matrix
