@@ -5,6 +5,7 @@ import {
   matrixReadRoomSchema,
   matrixSendMessageSchema,
   matrixAddReactionSchema,
+  matrixToolCatalog,
 } from "./schema.js";
 import type { z } from "zod";
 
@@ -274,5 +275,43 @@ describe("the Matrix tool schemas", () => {
       content: "hello",
     });
     expect(parsed).toEqual({ content: "hello" });
+  });
+});
+
+describe("the Matrix tool catalog", () => {
+  // The MCP server registers its tools and the MCP client advertises its tool
+  // specs from this one list (agora-ol3), so name, description and schema must
+  // not drift between the two sides. Descriptions are prompt text shown to the
+  // model verbatim, so a reword here is a behavioral change -- these lock the
+  // exact strings in.
+  test("covers exactly the three Matrix tools with name, description and schema", () => {
+    expect(matrixToolCatalog).toEqual([
+      {
+        name: "matrix_read_room",
+        description: "Read recent messages from the scenario's Matrix room, oldest first.",
+        schema: matrixReadRoomSchema,
+      },
+      {
+        name: "matrix_send_message",
+        description:
+          "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
+        schema: matrixSendMessageSchema,
+      },
+      {
+        name: "matrix_add_reaction",
+        description:
+          "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
+        schema: matrixAddReactionSchema,
+      },
+    ]);
+  });
+
+  test("every catalog schema serializes to a JSON schema, as the client requires", () => {
+    for (const { name, schema } of matrixToolCatalog) {
+      const jsonSchema = schema.toJSONSchema();
+      expect(jsonSchema.type).toBe("object");
+      expect(typeof jsonSchema).toBe("object");
+      expect(`${name} tool has a JSON schema`).toBeTruthy();
+    }
   });
 });

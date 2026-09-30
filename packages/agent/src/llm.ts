@@ -43,12 +43,6 @@ export interface ToolSpec {
   function: { name: string; description: string; parameters: Record<string, unknown> };
 }
 
-export interface McpToolDefinition {
-  name: string;
-  description: string;
-  schema: Record<string, unknown>;
-}
-
 /** Sampling with every field resolved to a concrete value. */
 export interface ResolvedSampling {
   maxTokens: number;

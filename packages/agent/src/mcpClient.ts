@@ -1,10 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import {
-  matrixReadRoomSchema,
-  matrixSendMessageSchema,
-  matrixAddReactionSchema,
-} from "@agora/shared";
+import { matrixToolCatalog } from "@agora/shared";
 import type { ToolSpec } from "./llm.js";
 
 /**
@@ -41,33 +37,16 @@ export class MatrixMcpClient {
 
   async listToolSpecs(): Promise<ToolSpec[]> {
     await this.connect();
-    return [
-      {
-        type: "function" as const,
-        function: {
-          name: "matrix_read_room",
-          description: "Read recent messages from the scenario's Matrix room, oldest first.",
-          parameters: matrixReadRoomSchema.toJSONSchema(),
-        },
+    // The server registers the very same tools from the same shared catalog, so
+    // what an agent is offered here and what the server can handle cannot drift.
+    return matrixToolCatalog.map(({ name, description, schema }) => ({
+      type: "function" as const,
+      function: {
+        name,
+        description,
+        parameters: schema.toJSONSchema(),
       },
-      {
-        type: "function" as const,
-        function: {
-          name: "matrix_send_message",
-          description:
-            "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
-          parameters: matrixSendMessageSchema.toJSONSchema(),
-        },
-      },
-      {
-        type: "function" as const,
-        function: {
-          name: "matrix_add_reaction",
-          description: "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
-          parameters: matrixAddReactionSchema.toJSONSchema(),
-        },
-      },
-    ];
+    }));
   }
 
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {

@@ -1,11 +1,8 @@
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import {
-  matrixReadRoomSchema,
-  matrixSendMessageSchema,
-  matrixAddReactionSchema,
-} from "@agora/shared";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { matrixToolCatalog } from "@agora/shared";
 import { getMatrixClient } from "./matrixPool.js";
 import { readRoom, sendMessage, addReaction } from "./matrixActions.js";
 
@@ -54,46 +51,43 @@ function buildServer(accessToken: string, matrixUserId?: string): McpServer {
   const server = new McpServer({ name: "agora-matrix-mcp", version: "0.1.0" });
   const roomId = runRoomId();
 
-  server.registerTool(
-    "matrix_read_room",
-    {
-      description: "Read recent messages from the scenario's Matrix room, oldest first.",
-      inputSchema: matrixReadRoomSchema,
-    },
-    async ({ limit }) => {
+  // One handler per tool, keyed by the catalog name. Each closes over the
+  // caller's token, room, and user id, so identity and room stay bound to the
+  // session (Q7 of the design): tools take no agent_id or room_id parameter.
+  const handlers: Record<
+    string,
+    (args: any) => CallToolResult | Promise<CallToolResult>
+  > = {
+    matrix_read_room: async ({ limit }) => {
       const client = getMatrixClient(accessToken);
       const messages = await readRoom(client, roomId, limit, matrixUserId);
       return { content: [{ type: "text", text: JSON.stringify(messages) }] };
     },
-  );
-
-  server.registerTool(
-    "matrix_send_message",
-    {
-      description:
-        "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
-      inputSchema: matrixSendMessageSchema,
-    },
-    async ({ content, replyToEventId }) => {
+    matrix_send_message: async ({ content, replyToEventId }) => {
       const client = getMatrixClient(accessToken);
       const sent = await sendMessage(client, roomId, content, replyToEventId);
       return { content: [{ type: "text", text: JSON.stringify(sent) }] };
     },
-  );
-
-  server.registerTool(
-    "matrix_add_reaction",
-    {
-      description:
-        "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
-      inputSchema: matrixAddReactionSchema,
-    },
-    async ({ eventId, reaction }) => {
+    matrix_add_reaction: async ({ eventId, reaction }) => {
       const client = getMatrixClient(accessToken);
       await addReaction(client, roomId, eventId, reaction);
       return { content: [{ type: "text", text: "ok" }] };
     },
-  );
+  };
+
+  // Register every tool from the shared catalog, which the MCP client mirrors
+  // from the same source, so the two cannot drift (agora-ol3).
+  for (const { name, description, schema } of matrixToolCatalog) {
+    const handler = handlers[name];
+    if (!handler) {
+      throw new Error(`No handler registered for catalog tool '${name}'`);
+    }
+    server.registerTool(
+      name,
+      { description, inputSchema: schema },
+      handler,
+    );
+  }
 
   return server;
 }

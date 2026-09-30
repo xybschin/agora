@@ -38,6 +38,51 @@ export const matrixAddReactionSchema = z.object({
   reaction: z.string(),
 });
 
+/**
+ * One tool in the Matrix MCP catalog: the name, the description an agent sees,
+ * and the zod schema for its parameters. The name+description+parameters triple
+ * is the unit the server registers and the client advertises, so it lives here,
+ * once, rather than being hand-written on both sides where it can drift.
+ */
+export interface MatrixToolDefinition {
+  name: string;
+  description: string;
+  schema: z.ZodType;
+}
+
+/**
+ * The MCP tool catalog, shared verbatim between the MCP server
+ * (packages/mcp-server) and the MCP client (packages/agent). The server's
+ * buildServer registers its tools from this list; the client's listToolSpecs
+ * derives its tool spec from it. A tool added, renamed, or reworded here
+ * changes both sides in lockstep — the same class of divergence that produced
+ * the server/client identity bug (agora-2ja).
+ *
+ * The descriptions are deliberate, stable prompt text: they are shown verbatim
+ * to the agent model, so rewording one changes agent behavior without any
+ * behavioral test noticing. Treat them as part of the agent-facing design, not
+ * as incidental prose.
+ */
+export const matrixToolCatalog: MatrixToolDefinition[] = [
+  {
+    name: "matrix_read_room",
+    description: "Read recent messages from the scenario's Matrix room, oldest first.",
+    schema: matrixReadRoomSchema,
+  },
+  {
+    name: "matrix_send_message",
+    description:
+      "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
+    schema: matrixSendMessageSchema,
+  },
+  {
+    name: "matrix_add_reaction",
+    description:
+      "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
+    schema: matrixAddReactionSchema,
+  },
+];
+
 const personaSchema = z.object({
   displayName: z.string(),
   flavorText: z.string(),
