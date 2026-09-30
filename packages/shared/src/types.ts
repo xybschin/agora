@@ -1,5 +1,12 @@
 export interface PersonaTraits {
-  /** 0-1: how strongly the agent shifts its stated opinion toward apparent group consensus. */
+  /**
+   * 0-1: how far the agent's *public* position may drift from its *private*
+   * recorded stance (the one it posts via update_stance) toward apparent group
+   * consensus. High conformity means the stated view leans to the room while the
+   * private stance stays more guarded; low conformity keeps public ≈ private and
+   * resists the pull of the group. Refined by agora-c75.8 to frame the gap as
+   * private/public divergence rather than a bare drive toward consensus.
+   */
   conformity: number;
   /** 0-1: how forcefully the agent states opinions and pushes back on disagreement. */
   assertiveness: number;

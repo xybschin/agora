@@ -196,6 +196,116 @@ describe("buildSystemPrompt own-message section", () => {
   });
 });
 
+describe("buildSystemPrompt speaking contract", () => {
+  const base = {
+    persona: AGENT.persona, // conformity 0.5, assertiveness 0.5, openness 0.5
+    topic: "Should the speed limit change?",
+    readWindowSize: 20,
+    ownMessageHistory: [],
+  };
+
+  function promptFor(overrides: Record<string, unknown> = {}) {
+    return buildSystemPrompt({ ...base, ...overrides });
+  }
+
+  // A persona at each trait's extremes, to exercise the low/high trait readings.
+  const lowPersona = {
+    ...AGENT.persona,
+    traits: { conformity: 0.1, assertiveness: 0.1, opennessToEvidence: 0.1 },
+  };
+  const highPersona = {
+    ...AGENT.persona,
+    traits: { conformity: 0.9, assertiveness: 0.9, opennessToEvidence: 0.9 },
+  };
+
+  test("no longer dumps raw trait numbers or the old 0=low,1=high rubric", () => {
+    const prompt = promptFor();
+    expect(prompt).not.toMatch(/conformity:\s*0\.5/);
+    expect(prompt).not.toMatch(/0=low/);
+    expect(prompt).not.toMatch(/1=high/);
+    expect(prompt).not.toMatch(/assertiveness:\s*0\.5/);
+    expect(prompt).not.toMatch(/opennessToEvidence:\s*0\.5/);
+  });
+
+  test("does not let any trait name appear as a labelled number", () => {
+    // Even at the extremes, no trait prints as "key: <value>".
+    for (const persona of [lowPersona, highPersona]) {
+      const p = buildSystemPrompt({ ...base, persona });
+      expect(p).not.toMatch(/conformity:\s*\d/);
+      expect(p).not.toMatch(/assertiveness:\s*\d/);
+      expect(p).not.toMatch(/opennessToEvidence:\s*\d/);
+    }
+  });
+
+  test("still includes the character and stance lines that drive continuity", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain(`You are ${AGENT.persona.displayName}`);
+    expect(prompt).toContain(`Your character: ${AGENT.persona.flavorText}`);
+    expect(prompt).toContain(`Your current private stance on the topic is ${AGENT.persona.initialStance}`);
+  });
+
+  test("describes how conformity behaves rather than printing its value", () => {
+    // Middle conformity: responsive to consensus but not at the cost of judgment.
+    expect(promptFor()).toContain("lean toward a clear consensus");
+    // Low conformity: holds to its own reasoning, consensus does not pull it.
+    expect(promptFor({ persona: lowPersona })).toContain("Consensus does not pull you");
+    // High conformity: public drift beyond a guarded private stance (divergence, not mere agreement).
+    const high = promptFor({ persona: highPersona });
+    expect(high).toContain("go along with the room");
+    expect(high).toContain("record your true private stance");
+  });
+
+  test("reframes conformity as private/public divergence, not a drive to consensus", () => {
+    const prompt = promptFor({ persona: highPersona });
+    // The point of high conformity is that the *public* position drifts while the
+    // *private* stance stays recorded -- not that the agent must converge on the group.
+    expect(prompt).toContain("stated position may drift toward the group");
+    expect(prompt).toContain("record your true private stance");
+    expect(prompt).not.toContain("you must agree with the group");
+  });
+
+  test("describes assertiveness behaviourally at both extremes", () => {
+    expect(promptFor({ persona: highPersona })).toContain("push back and disagree openly");
+    expect(promptFor({ persona: lowPersona })).toContain("preferring to soften disagreement");
+  });
+
+  test("describes openness-to-evidence behaviourally at both extremes", () => {
+    expect(promptFor({ persona: highPersona })).toContain("your stance moves when the reasoning warrants it");
+    expect(promptFor({ persona: lowPersona })).toContain("a good argument rarely moves you");
+  });
+
+  test("explicitly permits non-consensus outcomes", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain("does not have to reach a consensus");
+    expect(prompt).toContain("bluntly disagree");
+    expect(prompt).toContain("feel awkward");
+    expect(prompt).toContain("withdraw from a thread");
+    expect(prompt).toContain("do not manufacture agreement for its own sake");
+  });
+
+  test("explicitly bans restating arguments, commitments, or positions", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain("Do not restate an argument, commitment, or position");
+    expect(prompt).toContain("unless something has since given it new meaning");
+  });
+
+  test("makes clear a tick with nothing to add is a valid outcome, not a failure", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain("silence is a valid choice if you have nothing to add");
+    expect(prompt).toContain("Having nothing to add is never a failure");
+    expect(prompt).toContain("don't force a message");
+  });
+
+  test("still quotes own message history and forbids restating it", () => {
+    const prompt = buildSystemPrompt({
+      ...base,
+      ownMessageHistory: ["I think a 30 limit is right"],
+    });
+    expect(prompt).toContain("> I think a 30 limit is right");
+    expect(prompt).toContain("Do not restate them");
+  });
+});
+
 describe("buildTickMessage", () => {
   test("tick 1 with nothing new carries head and no-news clause", () => {
     const msg = buildTickMessage({ tick: 1, totalTicks: 7, newMessages: 0 });
