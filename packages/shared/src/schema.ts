@@ -185,6 +185,145 @@ export const credentialsFileSchema = z.object({
   agents: z.record(z.string(), agentCredentialSchema),
 });
 
+/**
+ * Per-agent credentials fields that were introduced by a recent change, so a
+ * credentials.yaml written before them is otherwise a valid modern file that
+ * merely lacks the field. Only these are translated into a readable
+ * "missing field" error; any other missing required field means a genuinely
+ * different or stale shape and must keep zod's own error.
+ */
+const RECENTLY_INTRODUCED_REQUIRED_AGENT_FIELDS: ReadonlySet<string> = new Set([
+  "matrixUserId",
+]);
+
 export function parseCredentialsFile(raw: unknown) {
-  return credentialsFileSchema.parse(raw);
+  try {
+    return credentialsFileSchema.parse(raw);
+  } catch (err) {
+    // A credentials.yaml written before per-agent `matrixUserId` existed is
+    // otherwise a valid modern file but carries no `matrixUserId` entry. zod's
+    // raw error ("expected string, received undefined" at agents.<id>
+    // .matrixUserId) tells the user nothing about what the file is missing or
+    // how to fix it. So translate that one missing-per-agent-field case into a
+    // single readable error naming the agent and the field.
+    //
+    // The translation only fires when the missing recently-introduced field is
+    // the *entire* problem: the field's key must be genuinely absent from an
+    // agent entry (not merely wrong-typed), and the file must parse once that
+    // field is filled in for every agent. A file that fails for any other
+    // reason too -- a stale Discord-shaped file, a wrong type, a bad value --
+    // is a genuinely unexpected validation failure and is surfaced unchanged by
+    // rethrowing zod's own error.
+    if (err instanceof z.ZodError) {
+      const missing = findMissingRecentlyIntroducedField(raw);
+      if (missing && parsesWithRecentlyIntroducedFieldsFilled(raw)) {
+        throw agentFieldError(missing.agentId, missing.field);
+      }
+    }
+    throw err;
+  }
+}
+
+interface MissingAgentField {
+  agentId: string;
+  field: string;
+}
+
+/**
+ * Find the first agent whose entry is genuinely missing one of the
+ * recently-introduced required per-agent fields: the field's key is absent
+ * from the raw object (so its value reads as `undefined`), as opposed to being
+ * present but malformed. "Missing" is decided against the raw input, not against
+ * zod's issues, because zod reports `received: undefined` for both an absent
+ * key and a wrong-typed value in this schema. Used to name the agent and field
+ * in the readable error; the parsesWithRecentlyIntroducedFieldsFilled guard
+ * still keeps the translation to files whose only defect is that missing field.
+ */
+function findMissingRecentlyIntroducedField(
+  raw: unknown,
+): MissingAgentField | undefined {
+  const agents = agentsRecord(raw);
+  if (!agents) {
+    return undefined;
+  }
+  for (const [agentId, entry] of Object.entries(agents)) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    for (const field of RECENTLY_INTRODUCED_REQUIRED_AGENT_FIELDS) {
+      if (!(field in entry)) {
+        return { agentId, field };
+      }
+    }
+  }
+  return undefined;
+}
+
+/** The `agents` record of a raw credentials file, or undefined if absent. */
+function agentsRecord(
+  raw: unknown,
+): Record<string, unknown> | undefined {
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const agents = (raw as Record<string, unknown>).agents;
+  if (typeof agents !== "object" || agents === null) {
+    return undefined;
+  }
+  return agents as Record<string, unknown>;
+}
+
+/**
+ * True when `raw` becomes a valid credentials file once every agent entry is
+ * given a sentinel value for the recently-introduced required per-agent fields
+ * it is missing. This is the guard that keeps the readable translation to
+ * files whose *only* defect is a missing recently-introduced field (the
+ * "written before it existed" case): a file that still fails to parse after
+ * those fields are filled in has other, real problems and must keep zod's own
+ * error.
+ *
+ * The schema types the recently-introduced fields as plain `z.string()`, so
+ * any string makes the file parse as far as they are concerned; only the rest
+ * of the shape can still fail.
+ */
+function parsesWithRecentlyIntroducedFieldsFilled(raw: unknown): boolean {
+  const agents = agentsRecord(raw);
+  if (!agents) {
+    return false;
+  }
+  let copy: unknown;
+  try {
+    copy = structuredClone(raw);
+  } catch {
+    return false;
+  }
+  const copyAgents = agentsRecord(copy);
+  if (!copyAgents) {
+    return false;
+  }
+  // Fill only keys that the entry genuinely lacks; a present-but-wrong-typed
+  // value stays as-is so a malformed entry still fails the parse below.
+  for (const entry of Object.values(copyAgents)) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+    for (const field of RECENTLY_INTRODUCED_REQUIRED_AGENT_FIELDS) {
+      if (!(field in entry)) {
+        (entry as Record<string, unknown>)[field] = "";
+      }
+    }
+  }
+  return credentialsFileSchema.safeParse(copy).success;
+}
+
+function agentFieldError(agentId: string, field: string): Error {
+  return new Error(
+    [
+      `Agent "${agentId}" in the credentials file is missing the required per-agent field "${field}".`,
+      `${field} is a per-agent field that is required in the credentials file, added by a recent change; ` +
+        `older credentials files written before it existed do not carry it.`,
+      `Re-run the credentials bootstrap tool to write a complete entry:`,
+      `  bun run packages/runner/src/matrixBootstrap.ts <scenario.yaml> [--out credentials.yaml]`,
+    ].join("\n"),
+  );
 }
