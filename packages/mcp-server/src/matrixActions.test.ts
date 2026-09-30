@@ -97,44 +97,60 @@ function matrixResponder(ownId: string) {
  * Tests for agent identity resolution in Matrix room messages.
  * Verifies that:
  * 1. Own messages are marked with "**your message:**" prefix
- * 2. Display names are resolved from room member list
+ * 2. Messages from other users are not marked
+ * 3. The agent system prompt tells the agent how its own messages are marked
+ *
+ * These drive the real readRoom (via the fetch-recording seam shared with the
+ * agora-2ja block) rather than re-implementing readRoom's marking inline: the
+ * old tests compared const string literals, which both tautologically passed
+ * regardless of readRoom's behavior and one of which TypeScript rejects as
+ * TS2367. Marking is now proven against readRoom's own comparison, so a
+ * regression in readRoom's own-message logic fails the suite.
  */
 
 describe("matrixActions identity marking", () => {
-  test("message with own user ID gets marked", () => {
-    // Integration with real readRoom requires a Matrix server, so we test the contract here:
-    // when matrixUserId matches a message's sender, content is prefixed with "**your message:**"
-    const ownUserId = "@alice:localhost";
-    const senderUserId = "@alice:localhost";
-    const originalContent = "Hello world";
+  test("message with the caller's own user ID gets marked", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
 
-    // Simulate what readRoom does
-    const isOwnMessage = ownUserId === senderUserId;
-    const markedContent = isOwnMessage ? `**your message:** ${originalContent}` : originalContent;
+    recordFetch(matrixResponder("@agora-alex:localhost"));
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
 
-    expect(markedContent).toBe("**your message:** Hello world");
+    const self = messages.find((m) => m.sender === "@agora-alex:localhost")!;
+    // The token's owner is the only identity readRoom knows: its own message is
+    // marked with the "**your message:**" prefix.
+    expect(self.content).toContain("**your message:**");
   });
 
-  test("message from different user is not marked", () => {
-    const ownUserId = "@alice:localhost";
-    // Broadened to `string` so the `===` comparison below is type-legal: the two
-    // are intentionally different users, but as bare string literals TypeScript
-    // flags the comparison as impossible (TS2367). The test's intent — a message
-    // from a different user must not be marked as the agent's own — is unchanged.
-    const senderUserId: string = "@bob:localhost";
-    const originalContent = "Hi there";
+  test("message from a different user is not marked", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
 
-    const isOwnMessage = ownUserId === senderUserId;
-    const markedContent = isOwnMessage ? `**your message:** ${originalContent}` : originalContent;
+    recordFetch(matrixResponder("@agora-alex:localhost"));
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
 
-    expect(markedContent).toBe("Hi there");
-    expect(markedContent).not.toContain("**your message:**");
+    const other = messages.find((m) => m.sender === "@carol:localhost")!;
+    // A message sent by someone other than the token's owner is never marked.
+    expect(other.content).not.toContain("**your message:**");
   });
 
-  test("agent system prompt explains own message marking", () => {
-    // Verify the persona.ts prompt mentions own message marking
-    const promptHint = "Messages from **yourself** are marked \"**your message:**\"";
-    expect(promptHint).toContain("**your message:**");
+  test("agent system prompt explains own message marking", async () => {
+    // Read the real prompt from the agent persona builder, not a copied literal.
+    const { buildSystemPrompt } = await import("../../agent/src/persona.js");
+    const prompt = buildSystemPrompt({
+      persona: {
+        displayName: "TestAgent",
+        flavorText: "A test agent",
+        traits: { conformity: 0.5, assertiveness: 0.5, opennessToEvidence: 0.5 },
+        initialStance: 0.2,
+      },
+      topic: "test",
+    });
+    expect(prompt).toContain(
+      'Messages from **yourself** are marked "**your message:**"',
+    );
   });
 });
 
