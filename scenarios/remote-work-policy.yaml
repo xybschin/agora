@@ -46,5 +46,3 @@ agents:
       flavorText: An HR business partner trying to project neutrality while privately leaning pro-flexibility.
       traits: { conformity: 0.6, assertiveness: 0.4, opennessToEvidence: 0.5 }
       initialStance: -0.2
-observers:
-  - "@admin:localhost"

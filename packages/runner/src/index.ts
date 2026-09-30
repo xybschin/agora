@@ -4,19 +4,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { formatRunId } from "@agora/shared";
 import { createRunLifecycle } from "./runLifecycle.js";
-import { loadScenario, loadCredentials } from "./loadConfig.js";
+import { loadScenario, loadCredentials, loadLocalReaders } from "./loadConfig.js";
 import { generateComposeFile } from "./composeGenerator.js";
 import { composeUp, composeDown } from "./dockerctl.js";
 import { waitForHealth, superviseRunToTerminal } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
 import { seedRoom } from "./seedRoom.js";
 import { createRunRoom } from "./runRoom.js";
-import { RoomPermissionsError } from "./roomPermissions.js";
+import { recordRoomSetupAbort } from "./runAbort.js";
 import type { RunOutcome } from "./runLifecycle.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const LOG_DIR = path.join(REPO_ROOT, "logs");
+// The git-ignored local source a local operator uses to opt a human into live
+// Runs as a Reader, mirroring the `credentials.yaml` convention. Absent means no
+// local Readers (agora-7bw).
+const LOCAL_READERS_PATH = path.join(REPO_ROOT, "readers.local.yaml");
 
 // Owns how this Run's transcript ends, and who gets to say so. A cancel is a
 // normal outcome, not a crash: SIGINT/SIGTERM record it as `run_aborted` so the
@@ -58,6 +62,14 @@ async function main(): Promise<void> {
   const scenario = await loadScenario(scenarioPath);
   const credentials = await loadCredentials(credentialsPath);
 
+  // Readers a local operator opted into, read from the git-ignored local source
+  // at run start. Merged with (never replacing) the Scenario's own `observers`,
+  // so a Scenario that names Readers still gets them and a local operator can add
+  // to that. A missing local file means none -- the shipped Scenarios run on a
+  // fresh clone with no Reader and no dependence on an account it does not have.
+  const localReaders = await loadLocalReaders(LOCAL_READERS_PATH);
+  const readers = [...(scenario.observers ?? []), ...localReaders];
+
   for (const agent of scenario.agents) {
     if (!credentials.agents[agent.id]) {
       throw new Error(`Scenario references agent "${agent.id}" with no matching entry in ${credentialsPath}`);
@@ -83,23 +95,21 @@ async function main(): Promise<void> {
   // on rather than something recorded in credentials.yaml.
   //
   // createRunRoom refuses a Run whose room does not hold the permissions it asked
-  // for, which is the last point before a human is admitted and agents start.
-  // The refusal is recorded here rather than in runRoom.ts because this is the
-  // module that owns the Transcript, and Run status is read off it: a Run whose
-  // Transcript carries a terminal event has a verdict, so without this event a
-  // Run stopped for want of permissions would read as merely incomplete --
-  // the room never got far enough for any agent to act.
+  // for, or whose declared Reader could not be invited, which is the last point
+  // before a human is admitted and agents start. The refusal is recorded here
+  // rather than in runRoom.ts because this is the module that owns the
+  // Transcript, and Run status is read off it: a Run whose Transcript carries a
+  // terminal event has a verdict, so without this event a Run stopped for want of
+  // permissions or a Reader would read as merely incomplete. Tick 0 is the honest
+  // value -- the room never got far enough for a tick 1.
   let roomId: string;
   try {
-    roomId = await createRunRoom({ scenario, credentials, runId });
+    roomId = await createRunRoom({ scenario, credentials, runId, readers });
   } catch (err) {
-    if (err instanceof RoomPermissionsError) {
-      console.error(`Aborting run ${runId}: ${err.message}`);
-      await lifecycle.recordOutcome(runId, {
-        type: "permissionsRefused",
-        reason: err.message,
-      });
-    }
+    // Records a terminal `run_aborted` (and prints the readable per-run message)
+    // for the abort-worthy room-setup failures; any other error is rethrown
+    // unchanged.
+    await recordRoomSetupAbort(lifecycle, runId, err);
     throw err;
   }
 

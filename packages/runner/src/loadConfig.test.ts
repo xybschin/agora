@@ -1,10 +1,26 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadCredentials } from "./loadConfig.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadCredentials, loadLocalReaders } from "./loadConfig.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXAMPLE_PATH = path.resolve(__dirname, "../../../credentials.example.yaml");
+
+const dirs: string[] = [];
+
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+/** A fresh temp dir, tracked so afterEach can remove it. */
+function freshDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "agora-loadconfig-"));
+  dirs.push(dir);
+  return dir;
+}
 
 // credentials.example.yaml is the route into a hosted Matrix for anyone not
 // running the bootstrap script: copy it to credentials.yaml and fill it in. So
@@ -52,5 +68,59 @@ describe("credentials.example.yaml", () => {
         expect(agent[field], `${id} is missing ${field}`).toBeTruthy();
       }
     }
+  });
+});
+
+describe("loadLocalReaders", () => {
+  test("a missing local file means no Readers, so a fresh clone runs with none", async () => {
+    // The local source is git-ignored, so on a fresh clone it is absent. A
+    // missing file must read as no Readers -- identical to a Scenario that names
+    // none -- not as an error, or every clone would still die at tick 0.
+    const dir = freshDir();
+    // There may be a real readers.local.yaml in the repo root the user has not
+    // git-ignored-committed; that is fine, this test points at a path that cannot
+    // exist.
+    const filename = join(dir, `missing-${Date.now()}.yaml`);
+    expect(await loadLocalReaders(filename)).toEqual([]);
+  });
+
+  test("reads a local file's list of Matrix user ids as Readers", async () => {
+    const dir = freshDir();
+    const filename = join(dir, "readers.local.yaml");
+    writeFileSync(
+      filename,
+      [
+        "# local Readers for this machine",
+        '- "@human:localhost"',
+        '- "@domain-expert:matrix.example.org"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    expect(await loadLocalReaders(filename)).toEqual([
+      "@human:localhost",
+      "@domain-expert:matrix.example.org",
+    ]);
+  });
+
+  test("an empty file is a fine way to say no local Readers", async () => {
+    const dir = freshDir();
+    const filename = join(dir, "readers.local.yaml");
+    writeFileSync(filename, "", "utf8");
+    expect(await loadLocalReaders(filename)).toEqual([]);
+  });
+
+  test("a malformed entry is a config error, not a silent skip", async () => {
+    const dir = freshDir();
+    const filename = join(dir, "readers.local.yaml");
+    writeFileSync(filename, "- not-a-user-id\n", "utf8");
+    expect(() => loadLocalReaders(filename)).toThrow(/not a well-formed Matrix user id/);
+  });
+
+  test("a non-list file is a config error, not a silent skip", async () => {
+    const dir = freshDir();
+    const filename = join(dir, "readers.local.yaml");
+    writeFileSync(filename, "observers: [\"@human:localhost\"]\n", "utf8");
+    expect(() => loadLocalReaders(filename)).toThrow(/should be a list of Matrix user ids/);
   });
 });

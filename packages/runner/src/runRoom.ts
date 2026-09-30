@@ -28,9 +28,33 @@ export function roomNameForRun(scenarioName: string, runId: string): string {
 }
 
 /**
+ * Thrown when a declared or locally-supplied Reader cannot be invited into a
+ * Run's room.
+ *
+ * Its own type because the two room-setup failures the caller has to tell apart
+ * are not the same thing: a `RoomPermissionsError` means the room was assembled
+ * wrong, while this means the room was right but an account the operator wanted
+ * watching could not be admitted. Both abort the Run, and both must record a
+ * terminal `run_aborted` event -- the difference is only that this one has to
+ * name the Reader, since the reason (rather than the whole room) is what the
+ * operator needs to act on.
+ */
+export class ReaderInviteError extends Error {
+  /** The Matrix user id that could not be invited, so the abort can name it. */
+  readonly readerId: string;
+
+  constructor(readerId: string, cause: string) {
+    super(`could not invite Reader "${readerId}" into the run's room: ${cause}`);
+    this.name = "ReaderInviteError";
+    this.readerId = readerId;
+  }
+}
+
+/**
  * Creates this Run's room, admits every agent in the Scenario's roster and every
- * Reader the Scenario declares, and returns the room id for the rest of the Run
- * to use.
+ * Reader the Scenario declares (plus any the local operator supplied through the
+ * git-ignored local source, merged by the caller), and returns the room id for
+ * the rest of the Run to use.
  *
  * The setup account owns the room: it creates it, it sends the invites, and it
  * writes the room's permissions. Matrix only lets a user join as themselves, so
@@ -48,8 +72,15 @@ export async function createRunRoom(params: {
   scenario: ScenarioConfig;
   credentials: CredentialsFile;
   runId: string;
+  /**
+   * The full list of Readers to invite, as resolved by the caller (the
+   * Scenario's `observers` unioned with the git-ignored local source). When
+   * omitted, falls back to the Scenario's `observers`; callers that merge a
+   * local source pass the merged list here.
+   */
+  readers?: string[];
 }): Promise<string> {
-  const { scenario, credentials, runId } = params;
+  const { scenario, credentials, runId, readers } = params;
   const baseUrl = credentials.matrix.hostBaseUrl;
   const setupAccessToken = credentials.matrixSetupAccessToken;
 
@@ -108,13 +139,38 @@ export async function createRunRoom(params: {
   // an invite takes a user id and nothing else, and that is the whole reason no
   // Reader credential is ever read or stored -- so a human accepts the invite
   // themselves, once per room.
-  const readers = scenario.observers ?? [];
-  for (const reader of readers) {
-    await inviteUserToRoom(baseUrl, setupAccessToken, roomId, reader);
+  //
+  // A Reader is a watcher, not a participant. The room has been permission-correct
+  // since before the first Reader invite went out, so a Reader who cannot be
+  // reached does not compromise the experiment -- but a declared Reader the Run
+  // was told to admit is part of what was asked for, so the Run still aborts
+  // (fatal), while naming exactly which Reader could not be invited and why. The
+  // remaining invites are still attempted, so one unreachable Reader does not
+  // silently strand the others.
+  const readerList = readers ?? scenario.observers ?? [];
+  let firstReaderFailure: { readerId: string; cause: string } | undefined;
+  for (const reader of readerList) {
+    try {
+      await inviteUserToRoom(baseUrl, setupAccessToken, roomId, reader);
+    } catch (cause) {
+      firstReaderFailure ??= { readerId: reader, cause: messageOf(cause) };
+      console.error(`  could not invite Reader ${reader}: ${messageOf(cause)}`);
+    }
   }
-  if (readers.length > 0) {
-    console.log(`Invited ${readers.length} Readers to ${roomId}.`);
+  if (readerList.length > 0) {
+    console.log(`Invited ${readerList.length} Readers to ${roomId}.`);
+  }
+  if (firstReaderFailure) {
+    throw new ReaderInviteError(
+      firstReaderFailure.readerId,
+      firstReaderFailure.cause,
+    );
   }
 
   return roomId;
+}
+
+/** The human-readable text of a thrown value, used when naming a Reader's cause. */
+function messageOf(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }

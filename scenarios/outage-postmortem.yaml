@@ -85,5 +85,3 @@ agents:
         assertiveness: 0.3
         opennessToEvidence: 0.5
       initialStance: 0.15
-observers:
-  - "@admin:localhost"

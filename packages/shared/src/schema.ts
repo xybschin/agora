@@ -153,7 +153,7 @@ const agentDefinitionSchema = z.object({
  * not exist has to fail at invite time with the homeserver's own error, which
  * is more useful than a guess made here about what the author meant.
  */
-const matrixUserIdSchema = z
+export const matrixUserIdSchema = z
   .string()
   .regex(/^@[^:\s]+:\S+$/, "Matrix user id must look like @localpart:server");
 
