@@ -190,3 +190,74 @@ describe("run lifecycle terminal events", () => {
     expect(claimed).toBe(false);
   });
 });
+
+describe("run lifecycle outcomes", () => {
+  test("a permissions-refusal outcome records run_aborted with tick 0 and the permission error message", async () => {
+    const logDir = freshLogDir();
+    const { composeDown } = stubComposeDown();
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+    await lifecycle.begin("r1");
+
+    const claimed = await lifecycle.recordOutcome("r1", {
+      type: "permissionsRefused",
+      reason: "agents were denied write access",
+    });
+
+    expect(claimed).toBe(true);
+    const events = readEvents(logDir, "r1");
+    const abort = events.find((e) => e.type === "run_aborted");
+    expect(abort).toEqual(
+      expect.objectContaining({
+        type: "run_aborted",
+        tick: 0,
+        reason: "agents were denied write access",
+      }),
+    );
+  });
+
+  test("a ticks-aborted outcome records run_aborted with the reported reason and ticksRun", async () => {
+    const logDir = freshLogDir();
+    const { composeDown } = stubComposeDown();
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+    await lifecycle.begin("r1");
+
+    const claimed = await lifecycle.recordOutcome("r1", {
+      type: "ticksAborted",
+      ticksRun: 3,
+      reason: "budget exceeded",
+    });
+
+    expect(claimed).toBe(true);
+    const events = readEvents(logDir, "r1");
+    const abort = events.find((e) => e.type === "run_aborted");
+    expect(abort).toEqual(
+      expect.objectContaining({
+        type: "run_aborted",
+        tick: 3,
+        reason: "budget exceeded",
+      }),
+    );
+  });
+
+  test("a completed outcome records run_completed with ticksRun", async () => {
+    const logDir = freshLogDir();
+    const { composeDown } = stubComposeDown();
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+    await lifecycle.begin("r1");
+
+    const claimed = await lifecycle.recordOutcome("r1", {
+      type: "completed",
+      ticksRun: 5,
+    });
+
+    expect(claimed).toBe(true);
+    const events = readEvents(logDir, "r1");
+    const completed = events.find((e) => e.type === "run_completed");
+    expect(completed).toEqual(
+      expect.objectContaining({
+        type: "run_completed",
+        tick: 5,
+      }),
+    );
+  });
+});

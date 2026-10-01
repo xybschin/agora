@@ -1,5 +1,10 @@
 import { appendEvent, type RunAbortedEvent, type RunCompletedEvent } from "@agora/shared";
 
+export type RunOutcome =
+  | { type: "permissionsRefused"; reason: string }
+  | { type: "ticksAborted"; ticksRun: number; reason: string }
+  | { type: "completed"; ticksRun: number };
+
 export interface RunLifecycleDeps {
   logDir: string;
   composeDown: (composeFile: string) => Promise<void>;
@@ -100,11 +105,46 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
     }
   }
 
+  /**
+   * Records a Run's terminal outcome. The sole place constructing run_aborted
+   * and run_completed event literals, so the runId format and event construction
+   * have one place that controls them. Returns false when the run is no longer
+   * active (already closed out by a concurrent signal or a previous call).
+   */
+  async function recordOutcome(runId: string, outcome: RunOutcome): Promise<boolean> {
+    switch (outcome.type) {
+      case "permissionsRefused":
+        return recordTerminal(runId, {
+          type: "run_aborted",
+          runId,
+          tick: 0,
+          reason: outcome.reason,
+          timestamp: new Date().toISOString(),
+        });
+      case "ticksAborted":
+        return recordTerminal(runId, {
+          type: "run_aborted",
+          runId,
+          tick: outcome.ticksRun,
+          reason: outcome.reason,
+          timestamp: new Date().toISOString(),
+        });
+      case "completed":
+        return recordTerminal(runId, {
+          type: "run_completed",
+          runId,
+          tick: outcome.ticksRun,
+          timestamp: new Date().toISOString(),
+        });
+    }
+  }
+
   return {
     begin,
     attachComposeFile,
     isActive,
     recordTerminal,
+    recordOutcome,
     teardownContainers,
     closeOutRun,
   };

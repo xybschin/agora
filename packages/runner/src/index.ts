@@ -12,6 +12,7 @@ import { BudgetTracker } from "./budget.js";
 import { seedRoom } from "./seedRoom.js";
 import { createRunRoom } from "./runRoom.js";
 import { RoomPermissionsError } from "./roomPermissions.js";
+import type { RunOutcome } from "./runLifecycle.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -94,12 +95,9 @@ async function main(): Promise<void> {
   } catch (err) {
     if (err instanceof RoomPermissionsError) {
       console.error(`Aborting run ${runId}: ${err.message}`);
-      await lifecycle.recordTerminal(runId, {
-        type: "run_aborted",
-        runId,
-        tick: 0,
+      await lifecycle.recordOutcome(runId, {
+        type: "permissionsRefused",
         reason: err.message,
-        timestamp: new Date().toISOString(),
       });
     }
     throw err;
@@ -146,13 +144,12 @@ async function main(): Promise<void> {
 
     if (result.aborted) {
       console.warn(`Run aborted after ${result.ticksRun} ticks: ${result.reason}`);
-      await lifecycle.recordTerminal(runId, {
-        type: "run_aborted",
-        runId,
-        tick: result.ticksRun,
+      const outcome: RunOutcome = {
+        type: "ticksAborted",
+        ticksRun: result.ticksRun,
         reason: result.reason ?? "unknown",
-        timestamp: new Date().toISOString(),
-      });
+      };
+      await lifecycle.recordOutcome(runId, outcome);
     } else if (!lifecycle.isActive()) {
       // A signal landed between the last tick and here. The transcript already
       // carries the abort, so there is nothing to write -- but reporting
@@ -161,12 +158,11 @@ async function main(): Promise<void> {
       console.warn("Run cancelled after the final tick; see run_aborted in the transcript.");
     } else {
       console.log(`Run completed all ${result.ticksRun} ticks.`);
-      await lifecycle.recordTerminal(runId, {
-        type: "run_completed",
-        runId,
-        tick: result.ticksRun,
-        timestamp: new Date().toISOString(),
-      });
+      const outcome: RunOutcome = {
+        type: "completed",
+        ticksRun: result.ticksRun,
+      };
+      await lifecycle.recordOutcome(runId, outcome);
     }
     console.log("Budget summary:", budget.summary());
     console.log(`Logs: logs/${runId}/events.jsonl`);
