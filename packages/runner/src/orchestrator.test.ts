@@ -3,8 +3,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScenarioConfig } from "@agora/shared";
+import { deriveRunStatus } from "@agora/shared";
 import { runTicks } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
+import { createRunLifecycle } from "./runLifecycle.js";
 
 const servers: { stop: (closeActiveConnections?: boolean) => void }[] = [];
 const dirs: string[] = [];
@@ -234,5 +236,95 @@ describe("runTicks cancellation", () => {
     const ends = events.filter((e) => e.type === "tick_end").map((e) => e.tick);
     expect(starts).toEqual(ends);
     expect(events.at(-1)).toEqual({ type: "tick_end", tick: 1 });
+  });
+});
+
+describe("full run lifecycle", () => {
+  test("a run that completes derives status correctly from the transcript on disk", async () => {
+    const logDir = freshLogDir();
+    const runId = "full-run-1";
+    const port = await startStubAgent({ logDir, runId, agentId: "agent1" });
+    const composeDown = async () => {};
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+
+    await lifecycle.begin(runId);
+
+    const tickResult = await runTicks({
+      scenario: makeScenario({ ticks: 3 }),
+      agentPorts: { agent1: port },
+      budget: new BudgetTracker(),
+      runId,
+      logDir,
+    });
+
+    expect(tickResult).toEqual({ aborted: false, ticksRun: 3 });
+
+    const success = await lifecycle.recordTerminal(runId, {
+      type: "run_completed",
+      runId,
+      tick: tickResult.ticksRun,
+      timestamp: new Date().toISOString(),
+    });
+    expect(success).toBe(true);
+
+    // Read the transcript back from disk and derive the status.
+    const events = readFileSync(join(logDir, runId, "events.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const derived = deriveRunStatus(events as never, 3);
+    expect(derived).toEqual({ status: "completed", ticksRun: 3 });
+  });
+
+  test("tick loop brackets are complete even when all agents are unreachable", async () => {
+    const logDir = freshLogDir();
+    const runId = "full-run-2";
+    // Use a port that is definitely not listening.
+    const deadPort = 1;
+    const composeDown = async () => {};
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+
+    await lifecycle.begin(runId);
+
+    const tickResult = await runTicks({
+      scenario: makeScenario({ ticks: 3 }),
+      agentPorts: { agent1: deadPort },
+      budget: new BudgetTracker(),
+      runId,
+      logDir,
+    });
+
+    // The run should have completed all ticks despite agent failures.
+    expect(tickResult).toEqual({ aborted: false, ticksRun: 3 });
+
+    const success = await lifecycle.recordTerminal(runId, {
+      type: "run_completed",
+      runId,
+      tick: tickResult.ticksRun,
+      timestamp: new Date().toISOString(),
+    });
+    expect(success).toBe(true);
+
+    // Assert every tick_start has a matching tick_end.
+    const events = readEvents(logDir, runId);
+    const starts = events
+      .filter((e) => e.type === "tick_start")
+      .map((e) => e.tick)
+      .sort();
+    const ends = events
+      .filter((e) => e.type === "tick_end")
+      .map((e) => e.tick)
+      .sort();
+    expect(starts).toEqual(ends);
+    expect(starts).toEqual([1, 2, 3]);
+
+    // Assert tick count is reported correctly.
+    const allEvents = readFileSync(join(logDir, runId, "events.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const derived = deriveRunStatus(allEvents as never, 3);
+    expect(derived.ticksRun).toBe(3);
   });
 });
