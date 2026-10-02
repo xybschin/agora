@@ -66,16 +66,28 @@ export type RunStatus = "aborted" | "completed" | "incomplete";
 export function deriveRunStatus(
   events: AgoraEvent[],
   totalTicks: number,
-): { status: RunStatus; ticksRun: number } {
-  const ticksRun = events.reduce((max, event) => Math.max(max, event.tick), 0);
+): { status: RunStatus } {
   const isAborted = events.some((event) => event.type === "run_aborted");
-  if (isAborted) return { status: "aborted", ticksRun };
+  if (isAborted) return { status: "aborted" };
 
   const isCompleted = events.some((event) => event.type === "run_completed");
-  if (isCompleted) return { status: "completed", ticksRun };
+  if (isCompleted) return { status: "completed" };
 
   const hasStart = events.some((event) => event.type === "run_started");
-  if (!hasStart && ticksRun === totalTicks) return { status: "completed", ticksRun };
+  // Legacy fallback: transcripts written before run_started existed recorded
+  // completion only implicitly, via the highest `tick` seen equal to the
+  // Scenario's final tick. New transcripts never carry `tick`, so this branch
+  // only ever fires for legacy on-disk Runs, keeping them from regressing to
+  // `incomplete` the day the vocabulary changed.
+  if (!hasStart && highestLegacyTick(events) === totalTicks) return { status: "completed" };
 
-  return { status: "incomplete", ticksRun };
+  return { status: "incomplete" };
+}
+
+/** Highest `tick` seen across events, for legacy transcripts that carry one. */
+function highestLegacyTick(events: AgoraEvent[]): number {
+  return events.reduce(
+    (max, event) => Math.max(max, "tick" in event && typeof event.tick === "number" ? event.tick : 0),
+    0,
+  );
 }

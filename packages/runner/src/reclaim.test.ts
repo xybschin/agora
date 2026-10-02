@@ -32,19 +32,18 @@ afterEach(async () => {
   tempDir = "";
 });
 
-function eventHere(kind: "started" | "completed" | "aborted" | "message", tick = 0): AgoraEvent {
+function eventHere(kind: "started" | "completed" | "aborted" | "message"): AgoraEvent {
   switch (kind) {
     case "started":
-      return { type: "run_started", runId: "r", tick, timestamp: "t" };
+      return { type: "run_started", runId: "r", timestamp: "t" };
     case "completed":
-      return { type: "run_completed", runId: "r", tick, timestamp: "t" };
+      return { type: "run_completed", runId: "r", timestamp: "t" };
     case "aborted":
-      return { type: "run_aborted", runId: "r", tick, reason: "cancelled", timestamp: "t" };
+      return { type: "run_aborted", runId: "r", reason: "cancelled", timestamp: "t" };
     case "message":
       return {
         type: "message",
         runId: "r",
-        tick,
         agentId: "a",
         matrixEventId: "$ev",
         roomId: "!irrelevant:localhost",
@@ -70,7 +69,7 @@ describe("isEligibleForReclamation (incomplete-is-never-eligible)", () => {
     // (ADR-0005): the Run began and never said how it ended.
     expect(isEligibleForReclamation([eventHere("started")])).toBe(false);
     expect(
-      isEligibleForReclamation([eventHere("started"), eventHere("message", 1), eventHere("message", 2)]),
+      isEligibleForReclamation([eventHere("started"), eventHere("message"), eventHere("message")]),
     ).toBe(false);
   });
 
@@ -80,20 +79,20 @@ describe("isEligibleForReclamation (incomplete-is-never-eligible)", () => {
 
   test("a run_completed transcript is eligible", () => {
     expect(
-      isEligibleForReclamation([eventHere("started"), eventHere("completed", 3)]),
+      isEligibleForReclamation([eventHere("started"), eventHere("completed")]),
     ).toBe(true);
   });
 
   test("a run_aborted transcript is eligible (a terminal verdict)", () => {
     expect(
-      isEligibleForReclamation([eventHere("started"), eventHere("aborted", 1)]),
+      isEligibleForReclamation([eventHere("started"), eventHere("aborted")]),
     ).toBe(true);
   });
 
   test("a terminal event in an old transcript without run_started is eligible", () => {
     // The verdict is still recorded, so the Run is a finished one even though
     // the transcript predates the run_started marker.
-    expect(isEligibleForReclamation([eventHere("completed", 2)])).toBe(true);
+    expect(isEligibleForReclamation([eventHere("completed")])).toBe(true);
   });
 });
 
@@ -102,7 +101,7 @@ describe("readRunTranscript / listRunIds", () => {
     const logDir = await makeLogDir();
     await writeTranscript(logDir, "polarization-20251001-1420", [
       eventHere("started"),
-      eventHere("completed", 1),
+      eventHere("completed"),
     ]);
     const events = await readRunTranscript(logDir, "polarization-20251001-1420");
     expect(events.map((e) => e.type)).toEqual(["run_started", "run_completed"]);
@@ -110,7 +109,7 @@ describe("readRunTranscript / listRunIds", () => {
 
   test("lists only directories that carry a transcript", async () => {
     const logDir = await makeLogDir();
-    await writeTranscript(logDir, "a-20251001-1421", [eventHere("started"), eventHere("completed", 1)]);
+    await writeTranscript(logDir, "a-20251001-1421", [eventHere("started"), eventHere("completed")]);
     await mkdir(path.join(logDir, "b-20251001-1422"), { recursive: true }); // no events.jsonl
     expect(await listRunIds(logDir)).toEqual(["a-20251001-1421"]);
   });
@@ -147,7 +146,7 @@ describe("reclaimRun", () => {
     const logDir = await makeLogDir();
     await writeTranscript(logDir, "polarization-20251001-1430", [
       eventHere("started"),
-      eventHere("message", 1),
+      eventHere("message"),
     ]);
     const deleted = stubPublicRooms([
       { room_id: "!found:localhost", name: "Agora - polarization - polarization-20251001-1430" },
@@ -173,7 +172,7 @@ describe("reclaimRun", () => {
     const logDir = await makeLogDir();
     await writeTranscript(logDir, "polarization-20251001-1431", [
       eventHere("started"),
-      eventHere("completed", 2),
+      eventHere("completed"),
     ]);
     const deleted = stubPublicRooms([
       { room_id: "!found:localhost", name: "Agora - polarization - polarization-20251001-1431" },
@@ -202,7 +201,7 @@ describe("reclaimRun", () => {
     // convention must still find and delete the room.
     await writeTranscript(logDir, "polarization-20251001-1432", [
       eventHere("started"),
-      eventHere("aborted", 0),
+      eventHere("aborted"),
     ]);
     const deleted = stubPublicRooms([
       { room_id: "!theroom:localhost", name: "Agora - polarization - polarization-20251001-1432" },
@@ -223,7 +222,7 @@ describe("reclaimRun", () => {
     const logDir = await makeLogDir();
     await writeTranscript(logDir, "polarization-20251001-1433", [
       eventHere("started"),
-      eventHere("completed", 1),
+      eventHere("completed"),
     ]);
     const deleted = stubPublicRooms([]); // directory is empty
 
@@ -246,7 +245,7 @@ describe("reclaimRun", () => {
     const runId = "complex-scenario-name-with-dashes-20251001-1434";
     await writeTranscript(logDir, runId, [
       eventHere("started"),
-      eventHere("completed", 1),
+      eventHere("completed"),
     ]);
     // parseRunId should extract "complex-scenario-name-with-dashes" as the
     // scenario name. If a local regex like /-\d{8}-\d{4}$/ were used, it

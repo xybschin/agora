@@ -78,75 +78,87 @@ describe("formatRunId / parseRunId round-trip", () => {
 // terminal event, either "run_completed" (packages/runner/src/index.ts, after
 // runTicks returns un-aborted) or "run_aborted" (on refusal or on a
 // SIGINT/SIGTERM cancel). "run_started" marks a transcript as belonging to the
-// new vocabulary. Per tick, agents append "stance"/"usage"/"message"
-// (packages/agent/src/loop.ts) and the runner appends the tick boundaries.
-//
-// ticksRun is the highest tick number seen across whatever events landed, so
-// it stays meaningful even for a Run that died mid-tick.
-function stance(tick: number): AgoraEvent {
-  return { type: "stance", runId: "r", tick, agentId: "a", stance: 0, timestamp: "t" };
+// new vocabulary. Per turn, agents append "stance"/"usage"/"message" plus
+// "agent_turn_started"/"agent_turn_ended" brackets (packages/agent/src/loop.ts).
+// deriveRunStatus returns only a status: the transcript's ordering/coverage is
+// carried by the per-event `seq` stamped at write time, and "how far it got" is
+// `ticksRun` bookkeeping held by the runner, not read off the log.
+function stance(): AgoraEvent {
+  return { type: "stance", runId: "r", agentId: "a", stance: 0, timestamp: "t" };
 }
 
 function started(): AgoraEvent {
-  return { type: "run_started", runId: "r", tick: 0, timestamp: "t" };
+  return { type: "run_started", runId: "r", timestamp: "t" };
 }
 
-function completed(tick: number): AgoraEvent {
-  return { type: "run_completed", runId: "r", tick, timestamp: "t" };
+function completed(): AgoraEvent {
+  return { type: "run_completed", runId: "r", timestamp: "t" };
 }
 
-function aborted(tick: number, reason: string): AgoraEvent {
-  return { type: "run_aborted", runId: "r", tick, reason, timestamp: "t" };
+function aborted(reason: string): AgoraEvent {
+  return { type: "run_aborted", runId: "r", reason, timestamp: "t" };
 }
+
+// A legacy transcript (predating the tick->seq change) still carries `tick` on
+// its events. Only the legacy fallback in deriveRunStatus reads it.
+type LegacyEvent = AgoraEvent & { tick: number };
+const legacyStance = (tick: number): LegacyEvent => ({ ...stance(), tick });
+const legacyStarted = (tick: number): LegacyEvent => ({ ...started(), tick });
 
 describe("deriveRunStatus", () => {
   test("is aborted when a run_aborted event is present, even if it reached the final tick", () => {
-    const events = [started(), stance(1), stance(2), stance(3), aborted(3, "budget exceeded")];
-    expect(deriveRunStatus(events, 3)).toEqual({ status: "aborted", ticksRun: 3 });
+    const events = [started(), stance(), stance(), aborted("budget exceeded")];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "aborted" });
   });
 
   test("is aborted when a run_aborted event is present, even alongside run_completed", () => {
     // A transcript carrying both terminal events is malformed. Aborting is the
     // safe reading: an operator must never be told a Run finished cleanly when
     // the same file also says it was stopped.
-    const events = [started(), stance(1), completed(1), aborted(1, "cancelled by SIGTERM")];
-    expect(deriveRunStatus(events, 1)).toEqual({ status: "aborted", ticksRun: 1 });
+    const events = [started(), stance(), completed(), aborted("cancelled by SIGTERM")];
+    expect(deriveRunStatus(events, 1)).toEqual({ status: "aborted" });
   });
 
   test("is completed when a run_completed event is present", () => {
-    const events = [started(), stance(1), stance(2), completed(2)];
-    expect(deriveRunStatus(events, 2)).toEqual({ status: "completed", ticksRun: 2 });
+    const events = [started(), stance(), stance(), completed()];
+    expect(deriveRunStatus(events, 2)).toEqual({ status: "completed" });
   });
 
   test("is NOT completed just because tick events reached the final tick", () => {
     // The false all-clear this replaces: a Run whose last tick's events landed
     // but which never recorded its own completion (crash between the final
     // tick and the bookkeeping) used to read as completed.
-    const events = [started(), stance(1), stance(2), stance(3)];
-    expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete", ticksRun: 3 });
+    const events = [started(), stance(), stance(), stance()];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete" });
   });
 
   test("is incomplete when a started Run recorded no terminal event", () => {
     // The signature of a killed Run: run_started is present, nothing closes
     // it out. That is what distinguishes "began and never finished" from an
     // empty or foreign directory.
-    const events = [started(), stance(1)];
-    expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete", ticksRun: 1 });
+    const events = [started(), stance()];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete" });
   });
 
   test("is incomplete for a Run that only recorded run_started", () => {
-    expect(deriveRunStatus([started()], 3)).toEqual({ status: "incomplete", ticksRun: 0 });
+    expect(deriveRunStatus([started()], 3)).toEqual({ status: "incomplete" });
   });
 
   test("falls back to the tick-count inference for transcripts with no run_started", () => {
     // Backward compatibility: Runs recorded before run_started/run_completed
     // existed carry neither, and must not all regress to "incomplete" the day
-    // this vocabulary ships.
-    const events = [stance(1), stance(2), stance(3)];
-    expect(deriveRunStatus(events, 3)).toEqual({ status: "completed", ticksRun: 3 });
+    // this vocabulary ships. They are the only transcripts still carrying a
+    // `tick` field, which the fallback reads.
+    const events = [legacyStance(1), legacyStance(2), legacyStance(3)];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "completed" });
+  });
+
+  test("a legacy transcript below the final tick is not inferred completed", () => {
+    const events = [legacyStarted(0), legacyStance(1)];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete" });
   });
 
   test("is incomplete for an empty event list", () => {
-    expect(deriveRunStatus([], 3)).toEqual({ status: "incomplete", ticksRun: 0 });
+    expect(deriveRunStatus([], 3)).toEqual({ status: "incomplete" });
   });
 });

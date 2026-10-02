@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ScenarioConfig } from "@agora/shared";
 import { deriveRunStatus } from "@agora/shared";
+import { appendEvent } from "@agora/shared";
 import { runTicks } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
 import { createRunLifecycle } from "./runLifecycle.js";
@@ -18,9 +19,8 @@ afterEach(() => {
 
 /**
  * Stands in for one agent container. The real agent appends its own `usage`/
- * `stance` events to the shared log before it responds, so the stub does the
- * same — that ordering is what makes `tick_end` a reliable "this tick's events
- * are all on disk" marker.
+ * `stance`/turn events to the shared log before it responds, so the stub does
+ * the same via the real appendEvent (which stamps each event's `seq`).
  */
 async function startStubAgent(opts: {
   logDir: string;
@@ -33,7 +33,14 @@ async function startStubAgent(opts: {
     async fetch(req) {
       const { tick } = (await req.json()) as { tick: number };
       opts.onTick?.();
-      await appendStubEvent(opts.logDir, opts.runId, opts.agentId, tick);
+      await appendEvent(opts.logDir, opts.runId, {
+        type: "usage",
+        runId: opts.runId,
+        agentId: opts.agentId,
+        promptTokens: 10,
+        completionTokens: 5,
+        timestamp: new Date().toISOString(),
+      });
       // The real agent returns the tick's usage on its response body, which is
       // where the orchestrator reads it for the budget.
       return Response.json({
@@ -47,31 +54,6 @@ async function startStubAgent(opts: {
   servers.push(server);
   if (server.port === undefined) throw new Error("stub agent bound no port");
   return server.port;
-}
-
-async function appendStubEvent(
-  logDir: string,
-  runId: string,
-  agentId: string,
-  tick: number,
-): Promise<void> {
-  const { appendFile, mkdir } = await import("node:fs/promises");
-  const path = await import("node:path");
-  const dir = path.join(logDir, runId);
-  await mkdir(dir, { recursive: true });
-  await appendFile(
-    path.join(dir, "events.jsonl"),
-    JSON.stringify({
-      type: "usage",
-      runId,
-      tick,
-      agentId,
-      promptTokens: 10,
-      completionTokens: 5,
-      timestamp: new Date().toISOString(),
-    }) + "\n",
-    "utf8",
-  );
 }
 
 function makeScenario(overrides: Partial<ScenarioConfig> = {}): ScenarioConfig {
@@ -96,22 +78,22 @@ function freshLogDir(): string {
 }
 
 /** Stripped to the two fields the assertions care about, so `toEqual` is exact. */
-function readEvents(logDir: string, runId: string): { type: string; tick: number }[] {
+function readEvents(logDir: string, runId: string): { type: string }[] {
   return readFileSync(join(logDir, runId, "events.jsonl"), "utf8")
     .split("\n")
     .filter(Boolean)
     .map((line) => {
-      const event = JSON.parse(line) as { type: string; tick: number };
-      return { type: event.type, tick: event.tick };
+      const event = JSON.parse(line) as { type: string };
+      return { type: event.type };
     });
 }
 
-function boundaries(events: { type: string; tick: number }[]): { type: string; tick: number }[] {
-  return events.filter((e) => e.type.startsWith("tick_"));
-}
-
-describe("runTicks tick boundaries", () => {
-  test("brackets every tick with tick_start and tick_end", async () => {
+describe("runTicks event writing", () => {
+  test("writes no per-tick boundary events of its own", async () => {
+    // The orchestrator's only event responsibility is gone: per-agent liveness
+    // now comes from the agents' own turn/heartbeat events (asserted in the
+    // agent loop tests), so runTicks must leave the log free of tick_start/
+    // tick_end.
     const logDir = freshLogDir();
     const runId = "stub-run-1";
     const port = await startStubAgent({ logDir, runId, agentId: "a" });
@@ -120,40 +102,16 @@ describe("runTicks tick boundaries", () => {
       scenario: makeScenario({ ticks: 2 }),
       agentPorts: { a: port },
       budget: new BudgetTracker(),
-      runId,
-      logDir,
     });
 
     expect(result).toEqual({ aborted: false, ticksRun: 2 });
-    expect(boundaries(readEvents(logDir, runId))).toEqual([
-      { type: "tick_start", tick: 1 },
-      { type: "tick_end", tick: 1 },
-      { type: "tick_start", tick: 2 },
-      { type: "tick_end", tick: 2 },
-    ]);
+    const types = readEvents(logDir, runId).map((e) => e.type);
+    expect(types).toEqual(["usage", "usage"]);
+    expect(types).not.toContain("tick_start");
+    expect(types).not.toContain("tick_end");
   });
 
-  test("writes tick_end after the agents' own events for that tick", async () => {
-    const logDir = freshLogDir();
-    const runId = "stub-run-2";
-    const port = await startStubAgent({ logDir, runId, agentId: "a" });
-
-    await runTicks({
-      scenario: makeScenario({ ticks: 1 }),
-      agentPorts: { a: port },
-      budget: new BudgetTracker(),
-      runId,
-      logDir,
-    });
-
-    expect(readEvents(logDir, runId).map((e) => e.type)).toEqual([
-      "tick_start",
-      "usage",
-      "tick_end",
-    ]);
-  });
-
-  test("still closes the tick it aborted on, so a budget stop is bracketed", async () => {
+  test("records the tick it aborted on as one tick run when the budget is blown", async () => {
     const logDir = freshLogDir();
     const runId = "stub-run-3";
     // Each agent costs 15 tokens a tick, so a cap of 10 is blown on tick 1
@@ -164,23 +122,14 @@ describe("runTicks tick boundaries", () => {
       scenario: makeScenario({ ticks: 5 }),
       agentPorts: { a: port },
       budget: new BudgetTracker(10),
-      runId,
-      logDir,
     });
 
     expect(result).toEqual({ aborted: true, reason: "budget exceeded", ticksRun: 1 });
-    expect(boundaries(readEvents(logDir, runId)).map((e) => e.type)).toEqual([
-      "tick_start",
-      "tick_end",
-    ]);
   });
 });
 
 describe("runTicks cancellation", () => {
   test("stops at the next tick boundary once stopWhen trips", async () => {
-    // The bug this guards: a cancel delivered while tick N's requests are in
-    // flight used to let the loop carry on and land a partial tick N+1 bracket
-    // *after* the terminal event, so the transcript no longer ended on one.
     const logDir = freshLogDir();
     const runId = "stub-run-4";
     let ticksRun = 0;
@@ -195,23 +144,15 @@ describe("runTicks cancellation", () => {
       scenario: makeScenario({ ticks: 5 }),
       agentPorts: { a: port },
       budget: new BudgetTracker(),
-      runId,
-      logDir,
       stopWhen: () => ticksRun >= 1,
     });
 
     expect(result).toEqual({ aborted: true, reason: "cancelled", ticksRun: 1 });
-    expect(boundaries(readEvents(logDir, runId))).toEqual([
-      { type: "tick_start", tick: 1 },
-      { type: "tick_end", tick: 1 },
-    ]);
+    // Only tick 1's single usage event landed.
+    expect(readEvents(logDir, runId).map((e) => e.type)).toEqual(["usage"]);
   });
 
-  test("leaves no tick bracket unclosed when cancelled mid-tick", async () => {
-    // A cancel arrives while tick 1's requests are in flight. The tick is not
-    // abandoned — abandoning it would strand a `tick_start` with no `tick_end`
-    // — so it finishes, and the loop stops at the next boundary. The invariant
-    // is that every `tick_start` has a matching `tick_end`.
+  test("a cancel leaves the orchestrator from launching a fresh round after the abort", async () => {
     const logDir = freshLogDir();
     const runId = "stub-run-5";
     let cancelledMidTick = false;
@@ -222,20 +163,15 @@ describe("runTicks cancellation", () => {
       onTick: () => void (cancelledMidTick = true),
     });
 
-    await runTicks({
+    const result = await runTicks({
       scenario: makeScenario({ ticks: 3 }),
       agentPorts: { a: port },
       budget: new BudgetTracker(),
-      runId,
-      logDir,
       stopWhen: () => cancelledMidTick,
     });
 
-    const events = readEvents(logDir, runId);
-    const starts = events.filter((e) => e.type === "tick_start").map((e) => e.tick);
-    const ends = events.filter((e) => e.type === "tick_end").map((e) => e.tick);
-    expect(starts).toEqual(ends);
-    expect(events.at(-1)).toEqual({ type: "tick_end", tick: 1 });
+    expect(result).toEqual({ aborted: true, reason: "cancelled", ticksRun: 1 });
+    expect(readEvents(logDir, runId)).toHaveLength(1);
   });
 });
 
@@ -253,8 +189,6 @@ describe("full run lifecycle", () => {
       scenario: makeScenario({ ticks: 3 }),
       agentPorts: { agent1: port },
       budget: new BudgetTracker(),
-      runId,
-      logDir,
     });
 
     expect(tickResult).toEqual({ aborted: false, ticksRun: 3 });
@@ -262,7 +196,6 @@ describe("full run lifecycle", () => {
     const success = await lifecycle.recordTerminal(runId, {
       type: "run_completed",
       runId,
-      tick: tickResult.ticksRun,
       timestamp: new Date().toISOString(),
     });
     expect(success).toBe(true);
@@ -274,10 +207,10 @@ describe("full run lifecycle", () => {
       .map((line) => JSON.parse(line) as Record<string, unknown>);
 
     const derived = deriveRunStatus(events as never, 3);
-    expect(derived).toEqual({ status: "completed", ticksRun: 3 });
+    expect(derived).toEqual({ status: "completed" });
   });
 
-  test("tick loop brackets are complete even when all agents are unreachable", async () => {
+  test("tick loop still completes when all agents are unreachable", async () => {
     const logDir = freshLogDir();
     const runId = "full-run-2";
     // Use a port that is definitely not listening.
@@ -291,40 +224,18 @@ describe("full run lifecycle", () => {
       scenario: makeScenario({ ticks: 3 }),
       agentPorts: { agent1: deadPort },
       budget: new BudgetTracker(),
-      runId,
-      logDir,
     });
 
-    // The run should have completed all ticks despite agent failures.
+    // The run should have completed all ticks despite agent failures, and no
+    // agent event should have landed (the unreachable agent wrote nothing).
     expect(tickResult).toEqual({ aborted: false, ticksRun: 3 });
+    expect(readEvents(logDir, runId).map((e) => e.type)).toEqual(["run_started"]);
 
     const success = await lifecycle.recordTerminal(runId, {
       type: "run_completed",
       runId,
-      tick: tickResult.ticksRun,
       timestamp: new Date().toISOString(),
     });
     expect(success).toBe(true);
-
-    // Assert every tick_start has a matching tick_end.
-    const events = readEvents(logDir, runId);
-    const starts = events
-      .filter((e) => e.type === "tick_start")
-      .map((e) => e.tick)
-      .sort();
-    const ends = events
-      .filter((e) => e.type === "tick_end")
-      .map((e) => e.tick)
-      .sort();
-    expect(starts).toEqual(ends);
-    expect(starts).toEqual([1, 2, 3]);
-
-    // Assert tick count is reported correctly.
-    const allEvents = readFileSync(join(logDir, runId, "events.jsonl"), "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
-    const derived = deriveRunStatus(allEvents as never, 3);
-    expect(derived.ticksRun).toBe(3);
   });
 });

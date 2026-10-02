@@ -38,7 +38,7 @@ describe("run lifecycle terminal events", () => {
     await lifecycle.begin("r1");
 
     expect(readEvents(logDir, "r1")).toEqual([
-      expect.objectContaining({ type: "run_started", runId: "r1", tick: 0 }),
+      expect.objectContaining({ type: "run_started", runId: "r1", seq: expect.any(Number) }),
     ]);
   });
 
@@ -51,13 +51,11 @@ describe("run lifecycle terminal events", () => {
     const first = await lifecycle.recordTerminal("r1", {
       type: "run_completed",
       runId: "r1",
-      tick: 5,
       timestamp: "t",
     });
     const second = await lifecycle.recordTerminal("r1", {
       type: "run_aborted",
       runId: "r1",
-      tick: 5,
       reason: "cancelled by SIGTERM",
       timestamp: "t",
     });
@@ -86,7 +84,6 @@ describe("run lifecycle terminal events", () => {
       lifecycle.recordTerminal("r1", {
         type: "run_completed",
         runId: "r1",
-        tick: 5,
         timestamp: "t",
       }),
     ]);
@@ -98,36 +95,24 @@ describe("run lifecycle terminal events", () => {
     );
   });
 
-  test("a cancel records tick -1 so it cannot lower the tick count already on disk", async () => {
+  test("a cancel records run_aborted with its own seq, and no tick-based sentinel", async () => {
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
     await lifecycle.begin("r1");
-    // Stand in for tick 4's events having already landed.
-    const { appendFile, mkdir } = await import("node:fs/promises");
-    await mkdir(join(logDir, "r1"), { recursive: true });
-    await appendFile(
-      join(logDir, "r1", "events.jsonl"),
-      JSON.stringify({
-        type: "usage",
-        runId: "r1",
-        tick: 4,
-        agentId: "a",
-        promptTokens: 1,
-        completionTokens: 1,
-        timestamp: "t",
-      }) + "\n",
-      "utf8",
-    );
 
     await lifecycle.closeOutRun("SIGTERM");
 
-    const abort = readEvents(logDir, "r1").find((e) => e.type === "run_aborted");
-    expect(abort).toEqual(expect.objectContaining({ type: "run_aborted", tick: -1 }));
-    // deriveRunStatus takes the max tick across events, so the sentinel cannot
-    // pull the reported tick count below what tick 4 already established.
-    const ticks = readEvents(logDir, "r1").map((e) => Number(e.tick));
-    expect(Math.max(...ticks)).toBe(4);
+    const events = readEvents(logDir, "r1");
+    const started = events.find((e) => e.type === "run_started");
+    const abort = events.find((e) => e.type === "run_aborted");
+    // The old `tick: -1` sentinel is gone: where the cancel landed in the
+    // stream is carried by the event's own monotonic seq (its seq is after the
+    // run_started that preceded it), and deriveRunStatus no longer reads a tick
+    // off the abort.
+    expect(abort).toEqual(expect.objectContaining({ type: "run_aborted" }));
+    expect(abort).not.toHaveProperty("tick");
+    expect(Number(abort?.seq)).toBeGreaterThan(Number(started?.seq));
   });
 
   test("a cancel before the compose file exists records but does not tear down", async () => {
@@ -183,7 +168,6 @@ describe("run lifecycle terminal events", () => {
     const claimed = await lifecycle.recordTerminal("never-started", {
       type: "run_completed",
       runId: "never-started",
-      tick: 1,
       timestamp: "t",
     });
 
@@ -192,7 +176,7 @@ describe("run lifecycle terminal events", () => {
 });
 
 describe("run lifecycle outcomes", () => {
-  test("a permissions-refusal outcome records run_aborted with tick 0 and the permission error message", async () => {
+  test("a permissions-refusal outcome records run_aborted with the permission error message", async () => {
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
@@ -209,13 +193,14 @@ describe("run lifecycle outcomes", () => {
     expect(abort).toEqual(
       expect.objectContaining({
         type: "run_aborted",
-        tick: 0,
         reason: "agents were denied write access",
       }),
     );
   });
 
-  test("a ticks-aborted outcome records run_aborted with the reported reason and ticksRun", async () => {
+  test("a ticks-aborted outcome records run_aborted with the reported reason", async () => {
+    // `ticksRun` is runner-level bookkeeping (drives the outcome decision and
+    // the console), but is no longer stamped onto the terminal event.
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
@@ -233,13 +218,14 @@ describe("run lifecycle outcomes", () => {
     expect(abort).toEqual(
       expect.objectContaining({
         type: "run_aborted",
-        tick: 3,
         reason: "budget exceeded",
       }),
     );
+    expect(abort).not.toHaveProperty("tick");
+    expect(abort).not.toHaveProperty("ticksRun");
   });
 
-  test("a completed outcome records run_completed with ticksRun", async () => {
+  test("a completed outcome records run_completed", async () => {
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
@@ -256,7 +242,6 @@ describe("run lifecycle outcomes", () => {
     expect(completed).toEqual(
       expect.objectContaining({
         type: "run_completed",
-        tick: 5,
       }),
     );
   });

@@ -173,9 +173,31 @@ export class AgentRuntime {
     return this.lastTickMessage;
   }
 
+  /**
+   * Monotonic count of this agent's turns in this Run, starting at 1, used to
+   * bracket a turn with `agent_turn_started`/`agent_turn_ended`. Independent
+   * per agent and per Run by construction (each Run gets fresh containers and
+   * a fresh runtime), and the per-agent answer to the global tick bracket it
+   * replaces: with no shared tick, each agent's own turn pair is its liveness
+   * evidence. In the current per-tick world one turn runs per `runTick` call,
+   * so the counter advances in lockstep with the scheduling tick; it stays a
+   * per-agent counter regardless of what drives the loop.
+   */
+  private turn = 0;
+
   async runTick(tick: number, totalTicks: number): Promise<TickResult> {
     const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, memoryWindowSize, logDir, mcp, llm } =
       this.config;
+
+    this.turn += 1;
+    const turn = this.turn;
+    await appendEvent(logDir, runId, {
+      type: "agent_turn_started",
+      runId,
+      agentId,
+      turn,
+      timestamp: new Date().toISOString(),
+    });
 
     const mcpTools = await mcp.listToolSpecs();
     const tools = [...mcpTools, STANCE_TOOL];
@@ -230,7 +252,6 @@ export class AgentRuntime {
         await appendEvent(logDir, runId, {
           type: "usage",
           runId,
-          tick,
           agentId,
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
@@ -271,7 +292,6 @@ export class AgentRuntime {
             await appendEvent(logDir, runId, {
               type: "stance",
               runId,
-              tick,
               agentId,
               stance: this.currentStance,
               rationale: typeof args.rationale === "string" ? args.rationale : undefined,
@@ -286,7 +306,6 @@ export class AgentRuntime {
             await appendEvent(logDir, runId, {
               type: "stance",
               runId,
-              tick,
               agentId,
               stance: prior,
               rationale: "carried over -- update_stance called with an invalid (non-numeric) stance; not applied",
@@ -295,18 +314,40 @@ export class AgentRuntime {
             resultText = `invalid stance (${String(args.stance)}) not applied; stance remains ${prior}`;
           }
         } else {
-          resultText = await mcp.callTool(call.function.name, args);
           if (call.function.name === "matrix_send_message") {
+            // A model that emits the call without a body must not drop the tick
+            // or reach the homeserver: `content` is required, and posting an
+            // empty string would only land a meaningless event in the room. So a
+            // missing or non-string body is refused here and returned as a tool
+            // result the model can read and correct within the same turn (the
+            // next chatCompletion sees it back in `messages`) -- the same
+            // self-correction path update_stance uses for a bad value, and the
+            // same principle as the malformed-JSON guard above. Throwing, as a
+            // genuine homeserver rejection does, would abort the tick without
+            // ever telling the model why, and a run would repeat the same bad
+            // call every tick.
+            const body = typeof args.content === "string" ? args.content : "";
+            if (body.trim().length === 0) {
+              resultText =
+                "matrix_send_message rejected: 'content' must be a non-empty string. Provide the message you want to post and call the tool again, or don't post.";
+              messages.push({
+                role: "tool",
+                tool_call_id: call.id,
+                name: call.function.name,
+                content: resultText,
+              });
+              continue;
+            }
+            resultText = await mcp.callTool(call.function.name, { ...args, content: body });
             try {
               const sent = JSON.parse(resultText) as { id: string; createdAt: string };
               await appendEvent(logDir, runId, {
                 type: "message",
                 runId,
-                tick,
                 agentId,
                 matrixEventId: sent.id,
                 roomId,
-                content: String(args.content ?? ""),
+                content: body,
                 replyToEventId:
                   typeof args.replyToEventId === "string" ? args.replyToEventId : undefined,
                 timestamp: sent.createdAt,
@@ -316,7 +357,7 @@ export class AgentRuntime {
               // event landed. A failed send throws above (or in callTool) and
               // never advances the queue, so a message the room never saw is
               // not offered back to the model as something to avoid restating.
-              this.ownMessageHistory.push(String(args.content ?? ""));
+              this.ownMessageHistory.push(body);
               if (this.ownMessageHistory.length > OWN_MESSAGE_HISTORY_MAX) {
                 this.ownMessageHistory.shift();
               }
@@ -324,6 +365,8 @@ export class AgentRuntime {
               console.error("Failed to parse matrix_send_message response:", resultText);
               throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
             }
+          } else {
+            resultText = await mcp.callTool(call.function.name, args);
           }
         }
 
@@ -340,13 +383,26 @@ export class AgentRuntime {
       await appendEvent(logDir, runId, {
         type: "stance",
         runId,
-        tick,
         agentId,
         stance: this.currentStance,
         rationale: "carried over -- agent did not call update_stance this tick",
         timestamp: new Date().toISOString(),
       });
     }
+
+    // Close the turn bracket. The bracket is intentionally asymmetric: `turn_ended`
+    // is only reached when the turn runs to completion — if runTick throws part-way
+    // (a hard homeserver rejection of a send, say) the `agent_turn_started` is left
+    // unclosed. That openness is the whole point: an unclosed `agent_turn_started`
+    // is the per-agent "this turn never completed" signature, the liveness evidence
+    // this bracket exists to provide.
+    await appendEvent(logDir, runId, {
+      type: "agent_turn_ended",
+      runId,
+      agentId,
+      turn,
+      timestamp: new Date().toISOString(),
+    });
 
     return {
       stance: this.currentStance,

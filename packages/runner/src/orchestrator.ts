@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { appendEvent, type ScenarioConfig } from "@agora/shared";
+import type { ScenarioConfig } from "@agora/shared";
 import type { BudgetTracker } from "./budget.js";
 
 interface TickResponse {
@@ -34,26 +34,31 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
  * /tick to every agent in parallel (Q22) and wait for all to finish before
  * advancing, so ticks stay a well-defined timestep for the stance metric.
  *
- * Each tick is bracketed by `tick_start`/`tick_end` in the Transcript, so a Run
- * that died mid-tick is distinguishable from one that died between ticks. The
- * boundaries land either side of `Promise.allSettled`, which is sound because an
- * agent appends its `usage`/`stance`/`message` events before it responds, so
- * every event for tick N is already on disk by the time allSettled settles.
+ * The orchestrator no longer writes any per-tick event boundary: per-agent
+ * liveness is recorded by the agent loops themselves, as
+ * `agent_turn_started`/`agent_turn_ended` pairs (each bracketing one agent's
+ * turn) plus `agent_heartbeat`. `ticksRun` remains this module's return
+ * value — runner-level bookkeeping that the caller logs and folds into the
+ * Run outcome — but it is no longer stamped onto any event. Event ordering is
+ * carried by the per-event `seq` the event-log writer assigns at write time:
+ * monotonic per runId within a single writing process. It is deliberately not
+ * a perfect global order across the runner and every concurrently-writing
+ * container (see the always-active ADR) — it is enough to reconstruct the
+ * order any one writer produced, which is what the removed global tick
+ * bracket previously gave per tick.
  *
  * `stopWhen` is polled at the top of each tick, not inside one: a cancel is
- * delivered asynchronously while a tick's requests are in flight, and the tick
- * cannot be abandoned mid-write without leaving an unclosed bracket. Ending
- * between ticks instead keeps the transcript's last event a terminal one.
+ * delivered asynchronously while a tick's requests are in flight, and ending
+ * between ticks keeps the orchestrator from launching a fresh round after the
+ * terminal event has been recorded.
  */
 export async function runTicks(params: {
   scenario: ScenarioConfig;
   agentPorts: Record<string, number>;
   budget: BudgetTracker;
-  runId: string;
-  logDir: string;
   stopWhen?: () => boolean;
 }): Promise<{ aborted: boolean; reason?: string; ticksRun: number }> {
-  const { scenario, agentPorts, budget, runId, logDir, stopWhen } = params;
+  const { scenario, agentPorts, budget, stopWhen } = params;
   const agentIds = Object.keys(agentPorts);
 
   for (let tick = 1; tick <= scenario.ticks; tick++) {
@@ -65,13 +70,6 @@ export async function runTicks(params: {
     }
 
     console.log(`--- tick ${tick}/${scenario.ticks} ---`);
-
-    await appendEvent(logDir, runId, {
-      type: "tick_start",
-      runId,
-      tick,
-      timestamp: new Date().toISOString(),
-    });
 
     const results = await Promise.allSettled(
       agentIds.map(async (agentId) => {
@@ -96,15 +94,9 @@ export async function runTicks(params: {
       }
     }
 
-    // Written before the budget check so an abort is bracketed by the tick that
-    // caused it — a Run that stops on budget is a Run that finished a tick.
-    await appendEvent(logDir, runId, {
-      type: "tick_end",
-      runId,
-      tick,
-      timestamp: new Date().toISOString(),
-    });
-
+    // The budget check is the only post-tick bookkeeping left here: a Run that
+    // stops on budget is a Run that finished this tick, and the terminal event
+    // (written by the caller via recordOutcome) records the outcome.
     if (budget.isExceeded()) {
       return { aborted: true, reason: "budget exceeded", ticksRun: tick };
     }

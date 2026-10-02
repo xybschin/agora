@@ -87,8 +87,8 @@ async function main(): Promise<void> {
   // The refusal is recorded here rather than in runRoom.ts because this is the
   // module that owns the Transcript, and Run status is read off it: a Run whose
   // Transcript carries a terminal event has a verdict, so without this event a
-  // Run stopped for want of permissions would read as merely incomplete. Tick 0
-  // is the honest value -- the room never got far enough for a tick 1.
+  // Run stopped for want of permissions would read as merely incomplete --
+  // the room never got far enough for any agent to act.
   let roomId: string;
   try {
     roomId = await createRunRoom({ scenario, credentials, runId });
@@ -137,8 +137,6 @@ async function main(): Promise<void> {
       scenario,
       agentPorts,
       budget,
-      runId,
-      logDir: LOG_DIR,
       stopWhen: () => !lifecycle.isActive(),
     });
 

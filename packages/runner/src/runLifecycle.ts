@@ -22,8 +22,10 @@ export interface RunLifecycleDeps {
  *
  * A crash is the case this cannot cover, and deliberately so: nothing can
  * record its own death. What it gets instead is bracketing — `run_started`
- * proves the Run began, and an unclosed `tick_start`/`tick_end` pair says which
- * tick it died in. `deriveRunStatus` reads the resulting shape as `incomplete`.
+ * proves the Run began. (Per-tick bracketing moved off this module: with the
+ * global tick bracket removed, per-agent `agent_turn_started`/`agent_turn_ended`
+ * pairs now delimit activity, and `deriveRunStatus` reads the resulting shape
+ * as `incomplete` when no terminal event ever lands.)
  */
 export function createRunLifecycle(deps: RunLifecycleDeps) {
   const { logDir, composeDown } = deps;
@@ -47,7 +49,6 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
     await appendEvent(logDir, runId, {
       type: "run_started",
       runId,
-      tick: 0,
       timestamp: new Date().toISOString(),
     });
   }
@@ -59,11 +60,11 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
 
   /**
    * Whether a Run is still in flight. The tick loop consults this so a cancel
-   * stops it at the next boundary: without it the loop keeps going while the
-   * signal handler tears down, and lands a partial `tick_start`/`tick_end` pair
-   * *after* the terminal event. The verdict survives that, but a transcript
-   * whose last event is a terminal one is the whole point, and a bracket
-   * trailing an abort is precisely what teaches a reader not to trust one.
+   * stops it at the next tick boundary: without it the loop keeps firing fresh
+   * rounds while the signal handler tears down, and posts events *after* the
+   * terminal event. The verdict survives that, but a transcript whose last
+   * event is a terminal one is the whole point, and false activity trailing an
+   * abort is precisely what teaches a reader not to trust one.
    */
   function isActive(): boolean {
     return active !== null;
@@ -87,16 +88,13 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
   async function closeOutRun(signal: string): Promise<void> {
     const run = active;
     if (!run) return;
-    // tick -1 means "which tick was in flight is not knowable from here" — the
-    // runner does not track the current tick, and inventing one would falsify
-    // the record. It is safe because deriveRunStatus takes the *maximum* tick
-    // across events, so this sentinel never lowers what the transcript already
-    // established. The tick_start/tick_end pair is what says whether the cancel
-    // landed mid-tick or between ticks.
+    // The terminal event no longer needs a tick-based sentinel: with per-event
+    // `seq` stamped by the writer, exactly where a cancel landed in the event
+    // stream is knowable from this event's own `seq`, and `deriveRunStatus`
+    // no longer reads a tick off it.
     await recordTerminal(run.runId, {
       type: "run_aborted",
       runId: run.runId,
-      tick: -1,
       reason: `cancelled by ${signal}`,
       timestamp: new Date().toISOString(),
     });
@@ -117,7 +115,6 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
         return recordTerminal(runId, {
           type: "run_aborted",
           runId,
-          tick: 0,
           reason: outcome.reason,
           timestamp: new Date().toISOString(),
         });
@@ -125,7 +122,6 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
         return recordTerminal(runId, {
           type: "run_aborted",
           runId,
-          tick: outcome.ticksRun,
           reason: outcome.reason,
           timestamp: new Date().toISOString(),
         });
@@ -133,7 +129,6 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
         return recordTerminal(runId, {
           type: "run_completed",
           runId,
-          tick: outcome.ticksRun,
           timestamp: new Date().toISOString(),
         });
     }

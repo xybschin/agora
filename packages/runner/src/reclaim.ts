@@ -39,7 +39,7 @@
 import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgoraEvent } from "@agora/shared";
+import type { AgoraEvent, SequencedEvent } from "@agora/shared";
 import { parseRunId } from "@agora/shared";
 import { loadCredentials } from "./loadConfig.js";
 import { deleteRoom, findRoomIdByName } from "./matrixRooms.js";
@@ -71,12 +71,12 @@ export function isEligibleForReclamation(events: readonly AgoraEvent[]): boolean
 export async function readRunTranscript(
   logDir: string,
   runId: string,
-): Promise<AgoraEvent[]> {
+): Promise<SequencedEvent[]> {
   const text = await readFile(path.join(logDir, runId, "events.jsonl"), "utf8");
   return text
     .split("\n")
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as AgoraEvent);
+    .map((line) => JSON.parse(line) as SequencedEvent);
 }
 
 /** Lists the runIds that have an on-disk transcript (`logs/<runId>/events.jsonl`). */

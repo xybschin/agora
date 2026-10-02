@@ -46,6 +46,15 @@ function sendCall(content: string): ToolCall {
   };
 }
 
+/** A matrix_send_message whose arguments can be made to lack a body on purpose. */
+function rawSendCall(argumentsJson: string): ToolCall {
+  return {
+    id: "call_send_raw",
+    type: "function",
+    function: { name: "matrix_send_message", arguments: argumentsJson },
+  };
+}
+
 function stanceCall(): ToolCall {
   return {
     id: "call_stance",
@@ -123,6 +132,56 @@ describe("AgentRuntime own message history", () => {
 
     const runtime = makeRuntime();
     await expect(runtime.runTick(1, 5)).rejects.toThrow();
+    expect(runtime.getOwnMessageHistory()).toEqual([]);
+  });
+
+  test("a malformed send (missing content) is returned to the model to self-correct, not thrown", async () => {
+    // Script the model first calling matrix_send_message with no body, then --
+    // on seeing the rejection -- retrying with a real message. The tick must
+    // survive the malformed call (the run was failing every tick on exactly
+    // this), and the corrected message must be the only thing posted.
+    script = [
+      assistant([rawSendCall(JSON.stringify({ replyToEventId: "$earlier" }))]),
+      assistant([sendCall("I think a 30 limit is right")]),
+      assistant([stanceCall()]),
+      assistant(),
+    ];
+    const sent: Array<Record<string, unknown>> = [];
+    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
+      if (name !== "matrix_send_message") return "{}";
+      sent.push(args);
+      return OK_SEND();
+    };
+
+    const runtime = makeRuntime();
+    await runtime.runTick(1, 5); // does not throw
+
+    // The empty-body call never reached the homeserver; only the correction did,
+    // and a successful post is remembered as usual.
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.content).toBe("I think a 30 limit is right");
+    expect(runtime.getOwnMessageHistory()).toEqual(["I think a 30 limit is right"]);
+  });
+
+  test("a send with an empty-string content is corrected, never posted", async () => {
+    // Whitespace-only content is refused up front too; the model then chooses
+    // not to post at all, and nothing lands in the room or the committed queue.
+    script = [
+      assistant([rawSendCall(JSON.stringify({ content: "   " }))]),
+      assistant([stanceCall()]),
+      assistant(),
+    ];
+    const sent: Array<Record<string, unknown>> = [];
+    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
+      if (name !== "matrix_send_message") return "{}";
+      sent.push(args);
+      return OK_SEND();
+    };
+
+    const runtime = makeRuntime();
+    await runtime.runTick(1, 5);
+
+    expect(sent).toHaveLength(0);
     expect(runtime.getOwnMessageHistory()).toEqual([]);
   });
 
@@ -550,5 +609,62 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
     ]);
     expect(runtime.getStance()).toBe(0);
     expect(Number.isNaN(runtime.getStance())).toBe(false);
+  });
+});
+
+describe("AgentRuntime turn bracketing events", () => {
+  // Drives real runTick calls writing to a throwaway logDir, then reads back
+  // the agent_turn_started/agent_turn_ended events so the test asserts the
+  // per-agent turn liveness evidence, not a stub.
+  async function turnEventsAfter(script_: Array<ScriptedMessage>, runTicksCount = 1) {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-turn-bracket-"));
+    mcp.callTool = async (name: string) =>
+      name === "matrix_send_message" ? OK_SEND() : "{}";
+    const runtime = makeRuntime({ logDir });
+    // A full 3-slot script per runTick: turn, stance, stop.
+    for (let i = 0; i < runTicksCount; i++) {
+      script = [...script_];
+      await runtime.runTick(i + 1, runTicksCount);
+    }
+    const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
+    return raw
+      .trim()
+      .split("\n")
+      .map((line) =>
+        JSON.parse(line) as {
+          type: string;
+          agentId?: string;
+          turn?: number;
+          seq?: number;
+        },
+      );
+  }
+
+  const noopTurn = [assistant([stanceCall()]), assistant()];
+
+  test("brackets a single turn with agent_turn_started/agent_turn_ended at turn 1", async () => {
+    const events = await turnEventsAfter(noopTurn);
+    const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
+    expect(turns).toEqual([
+      expect.objectContaining({ type: "agent_turn_started", agentId: "alice", turn: 1 }),
+      expect.objectContaining({ type: "agent_turn_ended", agentId: "alice", turn: 1 }),
+    ]);
+  });
+
+  test("increments the per-agent turn counter across successive turns, starting at 1", async () => {
+    const events = await turnEventsAfter(noopTurn, 2);
+    const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
+    expect(turns.map((e) => [e.type, e.turn])).toEqual([
+      ["agent_turn_started", 1],
+      ["agent_turn_ended", 1],
+      ["agent_turn_started", 2],
+      ["agent_turn_ended", 2],
+    ]);
+  });
+
+  test("writes each turn's events in write order by seq", async () => {
+    const events = await turnEventsAfter(noopTurn, 2);
+    const seqs = events.map((e) => e.seq as number);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
   });
 });
