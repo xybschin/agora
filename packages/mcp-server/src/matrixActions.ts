@@ -165,6 +165,39 @@ function txnId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Build the plain-text fallback for a rich reply, per the Matrix "Rich replies"
+ * convention: the `body` starts with the original event quoted sender-prefixed.
+ * Clients that cannot render the `m.in_reply_to` relation fall back to this
+ * text, so it should be the original message, not a placeholder. Returns
+ * undefined when no quote can be produced (original has no body), in which case
+ * the relation alone still carries the reply.
+ */
+async function replyFallback(
+  client: MatrixClient,
+  roomId: string,
+  eventId: string,
+): Promise<string | undefined> {
+  try {
+    const original = await csRequest<{
+      sender?: string;
+      content?: { body?: string };
+    }>(client, "GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`);
+    const originalBody = original.content?.body;
+    if (!originalBody) return undefined;
+    // Each line of the quoted original is prefixed with "> ", with an empty
+    // quote line ("> ") before the reply itself, as the spec's fallback does.
+    const quoted = originalBody
+      .split("\n")
+      .map((line) => (line.length > 0 ? `> ${line}` : `> `))
+      .join("\n");
+    return `> <${original.sender ?? "?"}>\n${quoted}`;
+  } catch {
+    // Don't block a send on quote-fetch failure; the relation is what matters.
+    return undefined;
+  }
+}
+
 /** Send an m.text message to a room; optionally as a rich reply to an event. */
 export async function sendMessage(
   client: MatrixClient,
@@ -183,8 +216,13 @@ export async function sendMessage(
       // plain-text fallback; some homeservers validate it loosely.
       "m.in_reply_to": { event_id: replyToEventId },
     };
-    // Wrap the body per the "Rich replies" quoting convention.
-    body["body"] = `> <no-fallback>\n\n${content}`;
+    // Wrap the body per the "Rich replies" quoting convention: quote the
+    // original message (fetched by id) rather than a "<no-fallback>" stub, so
+    // the reply reads correctly in any client that shows the fallback text.
+    const fallback = await replyFallback(client, roomId, replyToEventId);
+    if (fallback) {
+      body["body"] = `${fallback}\n\n${content}`;
+    }
   }
   const sent = await csRequest<{ event_id: string }>(
     client,

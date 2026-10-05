@@ -1,9 +1,12 @@
 import { afterEach, describe, test, expect } from "bun:test";
+import { sendMessage } from "./matrixActions.js";
 
 interface FetchCall {
   url: string;
   method: string | undefined;
   authorization: string | undefined;
+  /** The request body string (for POST/PUT calls), useful for asserting payloads. */
+  body: string | undefined;
 }
 
 const restoreFetch: Array<() => void> = [];
@@ -35,6 +38,7 @@ function recordFetch(
       url: String(input),
       method: init?.method,
       authorization: headers["Authorization"],
+      body: typeof init?.body === "string" ? init.body : undefined,
     };
     calls.push(call);
     return respond(call);
@@ -408,6 +412,62 @@ describe("matrixActions waitForActivity long-poll", () => {
     expect(sync.url).not.toContain("since=");
     expect(sync.url).not.toContain("!room:localhost");
     expect(sync.url).not.toContain("roomId");
+  });
+});
+
+describe("matrixActions sendMessage rich reply fallback", () => {
+  const client = { homeServerUrl: "https://hs.example", accessToken: "tok" };
+
+  test("reply quotes the original message instead of '<no-fallback>'", async () => {
+    const calls = recordFetch((call) => {
+      if (call.url.includes("/event/")) {
+        // The replied-to event, as the homeserver returns it.
+        return new Response(
+          JSON.stringify({
+            sender: "@carol:localhost",
+            content: { msgtype: "m.text", body: "hi from carol" },
+          }),
+          { status: 200 },
+        );
+      }
+      if (call.url.includes("/send/m.room.message/")) {
+        return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+
+    await sendMessage(client, "!room:localhost", "and my reply", "$original");
+
+    const send = calls.find((c) => c.url.includes("/send/m.room.message/"));
+    expect(send).toBeDefined();
+    const payload = JSON.parse(send!.body!);
+    expect(payload["m.relates_to"]["m.in_reply_to"].event_id).toBe("$original");
+    expect(payload.body).toContain("> <@carol:localhost>");
+    expect(payload.body).toContain("> hi from carol");
+    expect(payload.body).toContain("and my reply");
+    expect(payload.body).not.toContain("<no-fallback>");
+  });
+
+  test("fetch failure degrades to a bare reply with no fallback placeholder", async () => {
+    const calls = recordFetch((call) => {
+      if (call.url.includes("/event/")) {
+        return new Response("{}", { status: 404 });
+      }
+      if (call.url.includes("/send/m.room.message/")) {
+        return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+
+    await sendMessage(client, "!room:localhost", "and my reply", "$original");
+
+    const send = calls.find((c) => c.url.includes("/send/m.room.message/"));
+    expect(send).toBeDefined();
+    const payload = JSON.parse(send!.body!);
+    // Relation is still attached, but no quote placeholder pollutes the body.
+    expect(payload["m.relates_to"]["m.in_reply_to"].event_id).toBe("$original");
+    expect(payload.body).toBe("and my reply");
+    expect(payload.body).not.toContain("<no-fallback>");
   });
 });
 
