@@ -70,6 +70,26 @@ export interface AgentHeartbeatEvent extends BaseEvent {
   state: "waiting" | "active";
 }
 
+/**
+ * The Moderator's classification of the discussion as ACTIVE or STALE, recorded
+ * after reading the room's recent activity. Exactly one per assessment cycle.
+ */
+export interface ModeratorClassificationEvent extends BaseEvent {
+  type: "moderator_classification";
+  classification: "active" | "stale";
+  rationale: string;
+}
+
+/**
+ * Recorded when the Moderator ends the Run after classifying the discussion STALE.
+ * This is a terminal outcome distinct from wall-clock or budget backstops firing.
+ */
+export interface RunCompletedByModeratorEvent extends BaseEvent {
+  type: "moderator_ended_run";
+  rationale: string;
+  messageId: string; // The Matrix event id of the Moderator's closing message
+}
+
 export type AgoraEvent =
   | MessageEvent
   | StanceEvent
@@ -79,7 +99,9 @@ export type AgoraEvent =
   | RunAbortedEvent
   | AgentTurnStartedEvent
   | AgentTurnEndedEvent
-  | AgentHeartbeatEvent;
+  | AgentHeartbeatEvent
+  | ModeratorClassificationEvent
+  | RunCompletedByModeratorEvent;
 
 /**
  * An event as it appears on disk: every write carries a monotonic per-Run `seq`
