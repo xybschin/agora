@@ -15,7 +15,7 @@
  */
 
 import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
-import { createRoom, inviteUserToRoom, joinRoom } from "./matrixRooms.js";
+import { createRoom, inviteUserToRoom, joinRoom, setDisplayName } from "./matrixRooms.js";
 import { establishRunRoomPermissions, runRoomPowerLevels } from "./roomPermissions.js";
 
 /**
@@ -71,6 +71,14 @@ export async function createRunRoom(params: {
     roomNameForRun(scenario.name, runId),
   );
   console.log(`  room: ${roomId}`);
+
+  // The setup account joins the room as the Moderator before any agents join.
+  // Its display name is set to "Moderator" so it is visible to agents and Readers
+  // as the moderating participant.
+  const setupUserId = credentials.matrixSetupUserId;
+  await setDisplayName(baseUrl, setupAccessToken, setupUserId, "Moderator");
+  await joinRoom(baseUrl, setupAccessToken, roomId);
+  console.log(`  setup account joined as Moderator to ${roomId}.`);
 
   for (const agent of scenario.agents) {
     const cred = credentials.agents[agent.id]!;
