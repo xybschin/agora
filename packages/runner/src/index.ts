@@ -7,7 +7,7 @@ import { createRunLifecycle } from "./runLifecycle.js";
 import { loadScenario, loadCredentials } from "./loadConfig.js";
 import { generateComposeFile } from "./composeGenerator.js";
 import { composeUp, composeDown } from "./dockerctl.js";
-import { waitForHealth, runTicks } from "./orchestrator.js";
+import { waitForHealth, superviseRunToTerminal } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
 import { seedRoom } from "./seedRoom.js";
 import { createRunRoom } from "./runRoom.js";
@@ -132,34 +132,37 @@ async function main(): Promise<void> {
     console.log("Waiting for agents to become healthy...");
     await waitForHealth(healthUrls);
 
-    console.log(`Running ${scenario.ticks} ticks...`);
-    const result = await runTicks({
+    console.log("Supervising Run to terminal outcome...");
+    const result = await superviseRunToTerminal({
+      runId,
       scenario,
-      agentPorts,
+      logDir: logsDir,
       budget,
       stopWhen: () => !lifecycle.isActive(),
     });
 
-    if (result.aborted) {
-      console.warn(`Run aborted after ${result.ticksRun} ticks: ${result.reason}`);
+    if (result.outcome === "cancelled") {
+      // The signal handler owns writing the terminal event; returning here stops
+      // the supervision and makes the runner's own branch agree, while
+      // recordTerminal declines to write a second one.
+      console.warn("Run cancelled via signal; see run_aborted in the transcript.");
+    } else if (result.outcome === "moderator_ended") {
+      console.log(
+        `Run completed: Moderator ended the Run. Rationale: ${result.rationale}`,
+      );
       const outcome: RunOutcome = {
-        type: "ticksAborted",
-        ticksRun: result.ticksRun,
-        reason: result.reason ?? "unknown",
+        type: "moderatorEnded",
+        rationale: result.rationale,
+        messageId: result.messageId,
       };
       await lifecycle.recordOutcome(runId, outcome);
-    } else if (!lifecycle.isActive()) {
-      // A signal landed between the last tick and here. The transcript already
-      // carries the abort, so there is nothing to write -- but reporting
-      // "completed" here would be the one false all-clear this ADR set out to
-      // remove, so it is not said.
-      console.warn("Run cancelled after the final tick; see run_aborted in the transcript.");
-    } else {
-      console.log(`Run completed all ${result.ticksRun} ticks.`);
-      const outcome: RunOutcome = {
-        type: "completed",
-        ticksRun: result.ticksRun,
-      };
+    } else if (result.outcome === "wall_clock_exceeded") {
+      console.warn("Run aborted: wall-clock runtime limit exceeded");
+      const outcome: RunOutcome = { type: "wallClockExceeded" };
+      await lifecycle.recordOutcome(runId, outcome);
+    } else if (result.outcome === "budget_exceeded") {
+      console.warn("Run aborted: token budget exceeded");
+      const outcome: RunOutcome = { type: "budgetExceeded" };
       await lifecycle.recordOutcome(runId, outcome);
     }
     console.log("Budget summary:", budget.summary());
