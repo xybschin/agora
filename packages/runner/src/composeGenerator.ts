@@ -75,7 +75,7 @@ export function generateComposeFile(params: {
         // Containers reach the self-hosted Synapse over the shared infra
         // network, so they use the container-facing base URL, not the host one.
         MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
-        MAX_TOOL_STEPS_PER_TICK: String(scenario.maxToolStepsPerTick),
+        MAX_TOOL_STEPS_PER_TICK: String(scenario.maxToolStepsPerTurn),
         MEMORY_WINDOW_SIZE: String(scenario.memory.windowSize),
         MCP_URL: "http://mcp_server:3000/mcp",
         LLM_BASE_URL: cred.llmBaseUrl,
