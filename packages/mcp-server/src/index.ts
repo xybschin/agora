@@ -4,7 +4,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { matrixToolCatalog } from "@agora/shared";
 import { getMatrixClient } from "./matrixPool.js";
-import { readRoom, sendMessage, addReaction } from "./matrixActions.js";
+import { readRoom, sendMessage, addReaction, waitForActivity } from "./matrixActions.js";
 
 const app = express();
 app.use(express.json());
@@ -70,6 +70,11 @@ function buildServer(accessToken: string): McpServer {
       const client = getMatrixClient(accessToken);
       await addReaction(client, roomId, eventId, reaction);
       return { content: [{ type: "text", text: "ok" }] };
+    },
+    matrix_wait_for_activity: async ({ timeoutMs, since }) => {
+      const client = getMatrixClient(accessToken);
+      const result = await waitForActivity(client, roomId, timeoutMs, since);
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     },
   };
 

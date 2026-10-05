@@ -20,32 +20,27 @@ const runtime = new AgentRuntime({
   llm: env.llm,
 });
 
+// A minimal health endpoint only, so the runner's waitForHealth can probe
+// readiness. The old per-tick HTTP endpoint (POST /tick, which the runner used
+// to call on a fixed schedule) is gone: the agent now runs its own continuous,
+// event-driven loop for the life of the process via runtime.runLoop, waking on
+// room activity rather than being prompted per tick (see agora-xpc.2).
 const app = express();
-app.use(express.json());
-
 app.get("/health", (_req, res) => {
   res.json({ ok: true, agentId: env.agentId, stance: runtime.getStance() });
 });
 
-app.post("/tick", async (req, res) => {
-  const tick = Number(req.body?.tick);
-  if (!Number.isInteger(tick)) {
-    res.status(400).json({ ok: false, error: 'body must include integer "tick"' });
-    return;
-  }
-  // The Run's total tick count (the Scenario's `ticks`), sent per-tick by the
-  // runner so the agent can ground "tick N of M". Optional: a request that
-  // omits it (e.g. a health probe or a hand-driven tick) degrades to tick == M.
-  const totalTicks = Number(req.body?.totalTicks ?? tick);
-  try {
-    const result = await runtime.runTick(tick, totalTicks);
-    res.json({ ok: true, agentId: env.agentId, tick, ...result });
-  } catch (err) {
-    console.error(`[${env.agentId}] tick ${tick} failed:`, err);
-    res.status(500).json({ ok: false, agentId: env.agentId, tick, error: (err as Error).message });
-  }
+app.listen(env.port, "0.0.0.0", () => {
+  console.log(`agent ${env.agentId} listening on :${env.port} (continuous event-driven loop)`);
 });
 
-app.listen(env.port, "0.0.0.0", () => {
-  console.log(`agent ${env.agentId} listening on :${env.port}`);
+// Start the event-driven loop. This never returns: the agent stays active for
+// the entire Run, waiting for activity, heartbeating while it waits, and
+// taking a turn whenever something new arrives.
+runtime.runLoop().catch((err) => {
+  // A hard failure of the loop itself (not a transient wait blip, which runLoop
+  // already recovers from) is fatal: the agent's half of the Run would go
+  // silent, so exit and let the Run's supervision record the gap.
+  console.error(`[${env.agentId}] agent loop exited fatally:`, err);
+  process.exit(1);
 });

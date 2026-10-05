@@ -5,6 +5,7 @@ import {
   matrixReadRoomSchema,
   matrixSendMessageSchema,
   matrixAddReactionSchema,
+  matrixWaitForActivitySchema,
   matrixToolCatalog,
 } from "./schema.js";
 import type { z } from "zod";
@@ -318,6 +319,10 @@ describe("the Matrix tool schemas", () => {
       schema: matrixAddReactionSchema,
       minimal: { eventId: "$evt", reaction: "👍" },
     },
+    matrix_wait_for_activity: {
+      schema: matrixWaitForActivitySchema,
+      minimal: {},
+    },
   };
 
   for (const [name, { schema, minimal }] of Object.entries(schemas)) {
@@ -341,6 +346,28 @@ describe("the Matrix tool schemas", () => {
     });
     expect(parsed).toEqual({ content: "hello" });
   });
+
+  test("the wait tool's timeout is bounded and its resume token is carried", () => {
+    // The long-poll must never block forever: a bounded timeout is the whole
+    // basis of the event-driven loop giving up and re-waiting. And a negative,
+    // zero, or over-long timeout is a config error, not something the loop
+    // passes to homeservers that would round it to something surprising.
+    expect(() => matrixWaitForActivitySchema.parse({ timeoutMs: -1 })).toThrow();
+    expect(() => matrixWaitForActivitySchema.parse({ timeoutMs: 0 })).toThrow();
+    // Defaults to the shared max when omitted: the loop can pass a bare {} and
+    // get the bounded default.
+    expect(matrixWaitForActivitySchema.parse({}).timeoutMs).toBeGreaterThan(0);
+    // The resume token threads across waits (the /sync next_batch contract).
+    expect(matrixWaitForActivitySchema.parse({ since: "s42" }).since).toBe("s42");
+  });
+
+  test("an unreasonably large timeout is rejected rather than clamped silently", () => {
+    // Bounded means bounded: far above what any homeserver would honour, the
+    // schema refuses rather than silently waiting forever.
+    expect(() =>
+      matrixWaitForActivitySchema.parse({ timeoutMs: 4_000_000 }),
+    ).toThrow();
+  });
 });
 
 describe("the Matrix tool catalog", () => {
@@ -349,7 +376,7 @@ describe("the Matrix tool catalog", () => {
   // not drift between the two sides. Descriptions are prompt text shown to the
   // model verbatim, so a reword here is a behavioral change -- these lock the
   // exact strings in.
-  test("covers exactly the three Matrix tools with name, description and schema", () => {
+  test("covers the four Matrix tools with name, description and schema", () => {
     expect(matrixToolCatalog).toEqual([
       {
         name: "matrix_read_room",
@@ -367,6 +394,12 @@ describe("the Matrix tool catalog", () => {
         description:
           "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
         schema: matrixAddReactionSchema,
+      },
+      {
+        name: "matrix_wait_for_activity",
+        description:
+          "Block until new messages or reactions arrive in the scenario's Matrix room, or until the timeout elapses. Returns whether anything new arrived and a token (nextBatch) to resume waiting from next time. Intended for the agent runtime's event-driven loop, not for the model.",
+        schema: matrixWaitForActivitySchema,
       },
     ]);
   });

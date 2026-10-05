@@ -25,7 +25,7 @@ mock.module("./llm.js", () => ({
   },
 }));
 
-const { AgentRuntime, buildTickMessage } = await import("./loop.js");
+const { AgentRuntime, buildTurnMessage } = await import("./loop.js");
 const { buildSystemPrompt } = await import("./persona.js");
 
 const AGENT: AgentDefinition = {
@@ -82,14 +82,20 @@ function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
 // A module-level mcp stub whose callTool is swapped per test to simulate a
 // successful matrix_send_message (a well-formed event envelope) or a hard
 // failure. listToolSpecs returns no extra tools; the runtime adds stance itself.
+// waitForActivity is exercised by the runLoop tests and stubbed to not block.
 const mcp: {
   listToolSpecs: () => Promise<ToolSpec[]>;
   callTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+  waitForActivity: (args: { timeoutMs: number; since?: string }) => Promise<{
+    hasActivity: boolean;
+    nextBatch: string;
+  }>;
 } = {
   listToolSpecs: async () => [],
   callTool: async () => {
     throw new Error("not reached");
   },
+  waitForActivity: async () => ({ hasActivity: false, nextBatch: "s1" }),
 };
 
 function makeRuntime(overrides: Record<string, unknown> = {}) {
@@ -117,7 +123,7 @@ describe("AgentRuntime own message history", () => {
     mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
+    await runtime.runTurn();
 
     expect(runtime.getOwnMessageHistory()).toEqual(["I think a 30 limit is right"]);
   });
@@ -131,7 +137,7 @@ describe("AgentRuntime own message history", () => {
     };
 
     const runtime = makeRuntime();
-    await expect(runtime.runTick(1, 5)).rejects.toThrow();
+    await expect(runtime.runTurn()).rejects.toThrow();
     expect(runtime.getOwnMessageHistory()).toEqual([]);
   });
 
@@ -154,7 +160,7 @@ describe("AgentRuntime own message history", () => {
     };
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5); // does not throw
+    await runtime.runTurn(); // does not throw
 
     // The empty-body call never reached the homeserver; only the correction did,
     // and a successful post is remembered as usual.
@@ -179,7 +185,7 @@ describe("AgentRuntime own message history", () => {
     };
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
+    await runtime.runTurn();
 
     expect(sent).toHaveLength(0);
     expect(runtime.getOwnMessageHistory()).toEqual([]);
@@ -196,7 +202,7 @@ describe("AgentRuntime own message history", () => {
     });
 
     // Only alice drives a tick; bob never posts and must not see her memory.
-    await alice.runTick(1, 5);
+    await alice.runTurn();
 
     expect(alice.getOwnMessageHistory()).toEqual(["Alice posts"]);
     expect(bob.getOwnMessageHistory()).toEqual([]);
@@ -210,7 +216,7 @@ describe("AgentRuntime own message history", () => {
     // architecture each Run's compose stack is brought up separately), so it
     // must begin with an empty queue even though an earlier Run posted.
     const run1 = makeRuntime({ runId: "scenario-20260101-0100" });
-    await run1.runTick(1, 5);
+    await run1.runTurn();
     expect(run1.getOwnMessageHistory()).toHaveLength(1);
 
     const run2 = makeRuntime({ runId: "scenario-20260101-0200" });
@@ -228,7 +234,7 @@ describe("AgentRuntime own message history", () => {
     mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
+    await runtime.runTurn();
 
     expect(runtime.getOwnMessageHistory()).toEqual(["two", "three", "four"]);
   });
@@ -377,28 +383,27 @@ describe("buildSystemPrompt speaking contract", () => {
   });
 });
 
-describe("buildTickMessage", () => {
-  test("tick 1 with nothing new carries head and no-news clause", () => {
-    const msg = buildTickMessage({ tick: 1, totalTicks: 7, newMessages: 0 });
-    expect(msg).toContain("Tick 1 of 7.");
+describe("buildTurnMessage", () => {
+  test("turn 1 with nothing new carries head and no-news clause", () => {
+    const msg = buildTurnMessage({ turn: 1, newMessages: 0 });
+    expect(msg).toContain("Turn 1.");
     expect(msg).toContain("Nothing new since your last turn.");
   });
 
-  test("final tick keeps the same shape", () => {
-    const msg = buildTickMessage({ tick: 7, totalTicks: 7, newMessages: 2 });
-    expect(msg).toContain("Tick 7 of 7.");
+  test("a later turn with new messages reports them", () => {
+    const msg = buildTurnMessage({ turn: 3, newMessages: 2 });
+    expect(msg).toContain("Turn 3.");
     expect(msg).toContain("2 new messages since your last turn.");
   });
 
   test("singular new-message wording for a single new message", () => {
-    const msg = buildTickMessage({ tick: 3, totalTicks: 5, newMessages: 1 });
+    const msg = buildTurnMessage({ turn: 2, newMessages: 1 });
     expect(msg).toContain("1 new message since your last turn.");
   });
 
   test("quotes the agent's own last message and says not to restate it", () => {
-    const msg = buildTickMessage({
-      tick: 4,
-      totalTicks: 6,
+    const msg = buildTurnMessage({
+      turn: 4,
       newMessages: 3,
       ownLastMessage: "I think 30 is the right cap",
     });
@@ -407,9 +412,8 @@ describe("buildTickMessage", () => {
   });
 
   test("quotes only the first line of a multi-line own post", () => {
-    const msg = buildTickMessage({
-      tick: 2,
-      totalTicks: 4,
+    const msg = buildTurnMessage({
+      turn: 2,
       newMessages: 1,
       ownLastMessage: "First line.\nSecond line.",
     });
@@ -418,23 +422,23 @@ describe("buildTickMessage", () => {
   });
 
   test("omits the own-message clause when the agent has posted nothing", () => {
-    const msg = buildTickMessage({ tick: 1, totalTicks: 5, newMessages: 0 });
+    const msg = buildTurnMessage({ turn: 1, newMessages: 0 });
     expect(msg).not.toContain("already said");
+    expect(msg).not.toContain("Don't restate it");
   });
 
   test("stays under 200 chars even with a quoted last message", () => {
-    const msg = buildTickMessage({
-      tick: 12,
-      totalTicks: 12,
+    const msg = buildTurnMessage({
+      turn: 12,
       newMessages: 9,
       ownLastMessage: "A fairly long message that the agent has already posted and should not restate.",
     });
     expect(msg.length).toBeLessThan(200);
   });
 
-  test("truncates an over-long own last message so the tick message stays short", () => {
+  test("truncates an over-long own last message so the turn message stays short", () => {
     const veryLong = "x".repeat(500);
-    const msg = buildTickMessage({ tick: 1, totalTicks: 3, newMessages: 1, ownLastMessage: veryLong });
+    const msg = buildTurnMessage({ turn: 1, newMessages: 1, ownLastMessage: veryLong });
     expect(msg.length).toBeLessThan(200);
     expect(msg).toContain("…");
   });
@@ -458,12 +462,12 @@ describe("AgentRuntime new-message tracking", () => {
     script = [assistant([stanceCall()]), assistant(), assistant([stanceCall()]), assistant()];
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
-    expect(runtime.getLastTickMessage()).toContain("Nothing new since your last turn.");
+    await runtime.runTurn();
+    expect(runtime.getLastTurnMessage()).toContain("Nothing new since your last turn.");
 
-    await runtime.runTick(2, 5);
-    expect(runtime.getLastTickMessage()).toContain("3 new messages since your last turn.");
-    expect(runtime.getLastTickMessage()).toContain("Tick 2 of 5.");
+    await runtime.runTurn();
+    expect(runtime.getLastTurnMessage()).toContain("3 new messages since your last turn.");
+    expect(runtime.getLastTurnMessage()).toContain("Turn 2.");
   });
 
   test("single new message uses singular wording", async () => {
@@ -477,12 +481,12 @@ describe("AgentRuntime new-message tracking", () => {
     script = [assistant([stanceCall()]), assistant(), assistant([stanceCall()]), assistant()];
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
-    await runtime.runTick(2, 5);
-    expect(runtime.getLastTickMessage()).toContain("1 new message since your last turn.");
+    await runtime.runTurn();
+    await runtime.runTurn();
+    expect(runtime.getLastTurnMessage()).toContain("1 new message since your last turn.");
   });
 
-  test("an unreadable room degrades to nothing new without failing the tick", async () => {
+  test("an unreadable room degrades to nothing new without failing the turn", async () => {
     mcp.callTool = async (name: string) => {
       // Both the count-read and any send fail catastrophically.
       throw new Error("homeserver unreachable");
@@ -490,8 +494,8 @@ describe("AgentRuntime new-message tracking", () => {
     script = [assistant([stanceCall()]), assistant()];
 
     const runtime = makeRuntime();
-    await runtime.runTick(1, 5);
-    expect(runtime.getLastTickMessage()).toContain("Nothing new since your last turn.");
+    await runtime.runTurn();
+    expect(runtime.getLastTurnMessage()).toContain("Nothing new since your last turn.");
   });
 });
 
@@ -517,7 +521,7 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
     script = script_;
     mcp.callTool = async () => "{}";
     const runtime = makeRuntime({ logDir, agentDef: stancedAgent });
-    await runtime.runTick(1, 5);
+    await runtime.runTurn();
     const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
     return {
       runtime,
@@ -561,7 +565,7 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
     // The prior 0.8 (not NaN) must survive, and the system prompt rendered from
     // that persisted stance must not leak "NaN".
     script = [assistant([rawStanceCall(JSON.stringify({ stance: "0.5x" }))]), assistant()];
-    await runtime.runTick(2, 5);
+    await runtime.runTurn();
 
     expect(runtime.getStance()).toBe(0.8);
     const prompt = buildSystemPrompt({
@@ -613,18 +617,18 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
 });
 
 describe("AgentRuntime turn bracketing events", () => {
-  // Drives real runTick calls writing to a throwaway logDir, then reads back
+  // Drives real runTurn calls writing to a throwaway logDir, then reads back
   // the agent_turn_started/agent_turn_ended events so the test asserts the
   // per-agent turn liveness evidence, not a stub.
-  async function turnEventsAfter(script_: Array<ScriptedMessage>, runTicksCount = 1) {
+  async function turnEventsAfter(script_: Array<ScriptedMessage>, runTurns = 1) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-turn-bracket-"));
     mcp.callTool = async (name: string) =>
       name === "matrix_send_message" ? OK_SEND() : "{}";
     const runtime = makeRuntime({ logDir });
-    // A full 3-slot script per runTick: turn, stance, stop.
-    for (let i = 0; i < runTicksCount; i++) {
+    // A full 3-slot script per runTurn: turn, stance, stop.
+    for (let i = 0; i < runTurns; i++) {
       script = [...script_];
-      await runtime.runTick(i + 1, runTicksCount);
+      await runtime.runTurn();
     }
     const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
     return raw
@@ -668,3 +672,103 @@ describe("AgentRuntime turn bracketing events", () => {
     expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
   });
 });
+
+describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
+  // runLoop() is infinite by design; each test bounds it with an `isStopped`
+  // predicate that trips once the configured number of waits has happened, and
+  // drives `waitForActivity` from the module-level `mcp` stub. Events land in a
+  // throwaway logDir so the assertions read the actual transcript.
+  async function runLoopOnce(
+    steps: number,
+    behavior: (n: number, args: { timeoutMs: number; since?: string }) => Promise<{
+      hasActivity: boolean;
+      nextBatch: string;
+    }>,
+  ) {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-runloop-"));
+    let waited = 0;
+    const waits: Array<{ timeoutMs: number; since?: string }> = [];
+    mcp.waitForActivity = async (args) => {
+      waits.push(args);
+      waited += 1;
+      return behavior(waited, args);
+    };
+    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "[]");
+    const runtime = makeRuntime({
+      logDir,
+      waitTimeoutMs: 100,
+      isStopped: () => waited >= steps,
+    });
+    await runtime.runLoop();
+    const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
+    const events = raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; turn?: number; state?: string });
+    return { events, waits, runtime };
+  }
+
+  test("emits a waiting heartbeat, then runs a turn when activity arrives", async () => {
+    // First wait returns activity (the loop takes a turn), second returns none
+    // (the loop just re-waits); two waits bound the run.
+    script = [assistant([stanceCall()]), assistant()]; // one turn's script
+    const { events, waits } = await runLoopOnce(2, async (n) =>
+      n === 1 ? { hasActivity: true, nextBatch: "s2" } : { hasActivity: false, nextBatch: "s3" },
+    );
+
+    // A waiting heartbeat brackets the wait period.
+    const heartbeats = events.filter((e) => e.type === "agent_heartbeat");
+    expect(heartbeats.length).toBeGreaterThanOrEqual(2);
+    for (const hb of heartbeats) expect(hb.state).toBe("waiting");
+
+    // Exactly one turn ran (the activity arrived on the first wait), bracketed
+    // by its turn pair.
+    const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
+    expect(turns).toEqual([
+      expect.objectContaining({ type: "agent_turn_started", turn: 1 }),
+      expect.objectContaining({ type: "agent_turn_ended", turn: 1 }),
+    ]);
+
+    // No room id ever reaches the long-poll tool: only timeoutMs and since.
+    expect(waits.length).toBe(2);
+    expect(Object.keys(waits[0]!)).toEqual(["timeoutMs", "since"]);
+    expect(waits[0]!.timeoutMs).toBe(100);
+    // First wait starts fresh (no since); the second resumes from the first nextBatch.
+    expect(waits[0]!.since).toBeUndefined();
+    expect(waits[1]!.since).toBe("s2");
+  });
+
+  test("a timed-out wait with nothing new is a normal result, not an error", async () => {
+    // Every wait times out with no activity; the loop must not run a turn and
+    // must keep going (bound by the stop predicate), threading the token along.
+    script = [assistant([stanceCall()]), assistant()]; // must never be consumed
+    const { events, waits } = await runLoopOnce(3, async (n) => ({
+      hasActivity: false,
+      nextBatch: `s${n + 1}`,
+    }));
+
+    expect(events.filter((e) => e.type === "agent_turn_started")).toHaveLength(0);
+    expect(waits.map((w) => w.since)).toEqual([undefined, "s2", "s3"]);
+  });
+
+  test("a transient wait failure is recovered and the loop resumes", async () => {
+    // First wait throws (dropped connection); the loop must not crash, and the
+    // next wait must proceed -- and, because `since` only advances on success,
+    // the retry must be from the same position (the token that had not yet been
+    // committed). Second wait then delivers activity, which runs a turn.
+    script = [assistant([stanceCall()]), assistant()];
+    const { events, waits } = await runLoopOnce(3, async (n) => {
+      if (n === 1) throw new Error("dropped connection");
+      if (n === 2) return { hasActivity: true, nextBatch: "s2" };
+      return { hasActivity: false, nextBatch: "s3" };
+    });
+
+    // The turn still ran after the failure recovered (one bracketed turn).
+    const starts = events.filter((e) => e.type === "agent_turn_started");
+    expect(starts.map((e) => e.turn)).toEqual([1]);
+    const ends = events.filter((e) => e.type === "agent_turn_ended");
+    expect(ends.map((e) => e.turn)).toEqual([1]);
+
+    // The failed wait committed no token; the retry still had `since` undefined,
+    // and the successful wait threaded its nextBatch forward.
+    expect(waits.map((w) => w.since)).toEqual([undefined, undefined, "s2"]);
+  });
+});
+
