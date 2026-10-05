@@ -209,6 +209,8 @@ describe("createRunRoom", () => {
     expect(roomId).toBe("!run1:localhost");
     expect(calls.map((call) => `${call.method} ${call.url.replace(CLIENT_PREFIX, "")}`)).toEqual([
       "POST /createRoom",
+      `PUT /profile/%40agora-setup%3Alocalhost/displayname`, // Set setup account display name to "Moderator"
+      `POST /rooms/${ROOM}/join`, // Setup account joins as Moderator
       `POST /rooms/${ROOM}/invite`,
       `POST /rooms/${ROOM}/join`,
       `POST /rooms/${ROOM}/invite`,
@@ -225,10 +227,13 @@ describe("createRunRoom", () => {
       visibility: "public",
     });
     expect(calls[1]?.authorization).toBe("Bearer syt_setup");
-    expect(calls[1]?.body).toEqual({ user_id: "@agora-alex:localhost" });
-    expect(calls[2]?.authorization).toBe("Bearer syt_alex");
-    expect(calls[3]?.body).toEqual({ user_id: "@agora-bri:localhost" });
-    expect(calls[4]?.authorization).toBe("Bearer syt_bri");
+    expect(calls[1]?.body).toEqual({ displayname: "Moderator" });
+    expect(calls[2]?.authorization).toBe("Bearer syt_setup");
+    expect(calls[3]?.authorization).toBe("Bearer syt_setup");
+    expect(calls[3]?.body).toEqual({ user_id: "@agora-alex:localhost" });
+    expect(calls[4]?.authorization).toBe("Bearer syt_alex");
+    expect(calls[5]?.body).toEqual({ user_id: "@agora-bri:localhost" });
+    expect(calls[6]?.authorization).toBe("Bearer syt_bri");
   });
 
   test("writes the power levels that leave a Reader readable but unable to speak", async () => {
@@ -393,14 +398,17 @@ describe("createRunRoom", () => {
     // starts; nothing the second Run does reaches back into it, so an agent in
     // the second Run cannot read the first Run's Transcript. Its createRoom call
     // is the only second-Run call that doesn't name a room.
-    const secondRunCalls = calls.slice(7);
-    expect(secondRunCalls.length).toBe(7);
+    // First run now has 9 calls (was 7, but now includes setDisplayName + setup join).
+    // The second run starts at index 9, so there should be 9 more calls after the first.
+    const secondRunStartIndex = 9;
+    const secondRunCalls = calls.slice(secondRunStartIndex);
+    expect(secondRunCalls.length).toBe(9);
     expect(
       secondRunCalls
-        .slice(1)
+        .slice(2) // Skip the createRoom and setDisplayName, which don't address the room
         .every((call) => call.url.includes("!run2%3Alocalhost")),
     ).toBe(true);
-    expect(calls[7]?.body).toEqual({
+    expect(calls[secondRunStartIndex]?.body).toEqual({
       name: "Agora - remote-work-policy - remote-work-policy-20251001-1500",
       preset: "public_chat",
       visibility: "public",

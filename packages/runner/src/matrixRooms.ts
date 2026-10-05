@@ -222,6 +222,28 @@ export async function joinRoom(
 }
 
 /**
+ * Sets the display name for a user account globally (not per-room). The setup
+ * account uses this to set its display name to "Moderator" before joining a Run's
+ * room, so agents and Readers see it identified as such in the room.
+ */
+export async function setDisplayName(
+  baseUrl: string,
+  userAccessToken: string,
+  userId: string,
+  displayName: string,
+): Promise<void> {
+  await csRequest(
+    baseUrl,
+    "PUT",
+    clientPath(`profile/${encodeURIComponent(userId)}/displayname`),
+    {
+      accessToken: userAccessToken,
+      body: { displayname: displayName },
+    },
+  );
+}
+
+/**
  * Resolves a room's id from its display name against the homeserver's public
  * room directory. Each Run's room is created `visibility: public`
  * (see `createRoom`), so it appears there under the name `roomNameForRun` gave

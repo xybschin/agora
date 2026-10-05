@@ -1,0 +1,338 @@
+import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
+import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
+import type { MatrixMcpClient } from "./mcpClient.js";
+
+export interface ModeratorRuntimeConfig {
+  runId: string;
+  roomId: string;
+  matrixSetupUserId: string;
+  memoryWindowSize: number;
+  logDir: string;
+  mcp: MatrixMcpClient;
+  llm: LlmConfig;
+  /**
+   * How long each long-poll for new room activity blocks before the loop gives
+   * up and re-waits. Defaults to the shared tool's max (30s) but is injected so
+   * tests can drive the loop with a short wait.
+   */
+  waitTimeoutMs?: number;
+  /**
+   * Optional stop predicate, checked at the top of each loop iteration; when it
+   * returns true the loop returns cleanly.
+   */
+  isStopped?: () => boolean;
+}
+
+export interface ModeratorTurnResult {
+  classification: "active" | "stale";
+  shouldEnd: boolean;
+}
+
+const CLASSIFY_TOOL: ToolSpec = {
+  type: "function",
+  function: {
+    name: "classify_discussion",
+    description:
+      "Classify the current state of the discussion as ACTIVE (ongoing, with new points or disagreement/engagement) or STALE (repetitive, static positions, or disengaged). Call this exactly once per assessment after reading the room.",
+    parameters: {
+      type: "object",
+      properties: {
+        classification: {
+          type: "string",
+          enum: ["active", "stale"],
+          description: "ACTIVE if discussion is ongoing; STALE if it has gone repetitive or disengaged",
+        },
+        rationale: {
+          type: "string",
+          description:
+            "One or two sentences explaining why the discussion is classified this way, referencing specific points or patterns observed",
+        },
+      },
+      required: ["classification", "rationale"],
+    },
+  },
+};
+
+/**
+ * The Moderator's system prompt instructs it to read the room, classify the
+ * discussion, and either post nothing (ACTIVE) or compose a closing message (STALE).
+ * The prompt structure ensures the classification decision comes first, and the
+ * message-posting path is only reachable from STALE.
+ */
+function buildModeratorSystemPrompt(params: {
+  topic: string;
+  readWindowSize: number;
+  isFirstTurn: boolean;
+}): string {
+  const { topic, readWindowSize, isFirstTurn } = params;
+  return `You are a neutral Moderator observing a group discussion on the topic: "${topic}".
+
+Your role is to:
+1. Read the recent room messages (you can request up to ${readWindowSize} messages)
+2. Classify the discussion as ACTIVE or STALE
+3. Only if STALE, post a closing message
+
+Classification rules (decide which applies):
+- ACTIVE: The discussion shows new arguments, shifting positions, or open disagreement/pushback/hostility. Conflict is engagement, never reason to end.
+- STALE: Arguments repeat without new additions, positions frozen across exchanges, or visible disengagement (brief replies, ignored points, trailing off).
+- When unsure, prefer ACTIVE.
+
+You are not a participant; stay neutral and never express opinions on the topic. You have no stance, persona, or private position.
+
+IMPORTANT STRUCTURAL CONSTRAINT (enforced by construction):
+- You MUST call classify_discussion exactly once per turn.
+- Posting a message (matrix_send_message) is ONLY reachable after classify_discussion returns "stale".
+- The two paths are mutually exclusive: if classification is "active", you CANNOT and MUST NOT call matrix_send_message.
+
+${
+  isFirstTurn
+    ? ""
+    : `
+Your most recent assessment is above in the conversation history.
+
+If you classified ACTIVE last turn and the discussion remains ACTIVE, do NOT post a message—just call classify_discussion again with the new evidence.
+If you classified ACTIVE but now see clear staleness, re-assess and post your closing message only if the new assessment is STALE.
+`
+}`;
+}
+
+/**
+ * Builds the per-turn user message for the Moderator. Tells it how many new
+ * messages have arrived since its last assessment.
+ */
+function buildModeratorTurnMessage(newMessages: number): string {
+  if (newMessages <= 0) {
+    return "No new messages since your last assessment. Check if the discussion is still active or has become stale.";
+  }
+  return `${newMessages} new message${newMessages === 1 ? "" : "s"} since your last assessment. Read and reassess.`;
+}
+
+/**
+ * Runs the Moderator's assessment loop: the model reads the room, classifies
+ * the discussion, and — if STALE — posts a closing message.
+ */
+export class ModeratorRuntime {
+  /**
+   * The room's message count as of the last turn's start, used to compute
+   * "new since last assessment" for the turn message.
+   */
+  private lastTurnStartCount = 0;
+
+  /**
+   * Best-effort count of messages currently in the room.
+   */
+  private async countRoomMessages(): Promise<number | null> {
+    try {
+      const resultText = await this.config.mcp.callTool("matrix_read_room", {
+        limit: 100,
+      });
+      const parsed = JSON.parse(resultText) as unknown;
+      return Array.isArray(parsed) ? parsed.length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  constructor(private readonly config: ModeratorRuntimeConfig) {}
+
+  /**
+   * Runs the Moderator's assessment turn: reads the room, classifies the
+   * discussion, and if STALE, posts a closing message and signals that the
+   * Run should end.
+   */
+  async runTurn(): Promise<ModeratorTurnResult> {
+    const { runId, roomId, matrixSetupUserId, memoryWindowSize, logDir, mcp, llm } = this.config;
+
+    await appendEvent(logDir, runId, {
+      type: "agent_heartbeat",
+      runId,
+      agentId: "moderator",
+      state: "active",
+      timestamp: new Date().toISOString(),
+    });
+
+    const mcpTools = await mcp.listToolSpecs();
+    const tools = [...mcpTools, CLASSIFY_TOOL];
+
+    const currentCount = await this.countRoomMessages();
+    const newMessages = this.lastTurnStartCount === 0 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
+
+    const messages: ChatMessage[] = [
+      {
+        role: "system",
+        content: buildModeratorSystemPrompt({
+          topic: "the discussion",
+          readWindowSize: memoryWindowSize,
+          isFirstTurn: this.lastTurnStartCount === 0,
+        }),
+      },
+      {
+        role: "user",
+        content: buildModeratorTurnMessage(newMessages),
+      },
+    ];
+
+    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
+
+    let classification: "active" | "stale" = "active";
+    let rationale = "";
+    let closingMessageId: string | null = null;
+
+    // The tool-calling loop. The model must call classify_discussion exactly once.
+    // Only after a STALE classification can it call matrix_send_message.
+    for (let step = 0; step < 10; step++) {
+      // Safety cap on tool calls to prevent runaway loops
+      const { message } = await chatCompletion(llm, messages, tools);
+      messages.push(message);
+
+      if (!message.tool_calls || message.tool_calls.length === 0) {
+        break;
+      }
+
+      for (const call of message.tool_calls) {
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(call.function.arguments || "{}") as Record<string, unknown>;
+        } catch {
+          args = { raw: call.function.arguments };
+        }
+
+        let resultText: string;
+
+        if (call.function.name === "classify_discussion") {
+          // Record the classification event.
+          const rawClassification = String(args.classification).toLowerCase();
+          if (rawClassification === "active" || rawClassification === "stale") {
+            classification = rawClassification as "active" | "stale";
+            rationale = typeof args.rationale === "string" ? args.rationale : "";
+            await appendEvent(logDir, runId, {
+              type: "moderator_classification",
+              runId,
+              classification,
+              rationale,
+              timestamp: new Date().toISOString(),
+            });
+            resultText = `classification recorded: ${classification}`;
+          } else {
+            resultText = `invalid classification "${String(args.classification)}"; must be "active" or "stale"`;
+          }
+        } else if (call.function.name === "matrix_send_message") {
+          // STRUCTURAL INVARIANT: posting is only reachable from STALE path.
+          // Verify at the gate: if classification is ACTIVE, reject the message.
+          if (classification !== "stale") {
+            resultText =
+              "ERROR: You can only post a message after classifying the discussion as STALE. " +
+              `Current classification is "${classification}". Do not call matrix_send_message.`;
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function.name,
+              content: resultText,
+            });
+            continue;
+          }
+
+          const body = typeof args.content === "string" ? args.content : "";
+          if (body.trim().length === 0) {
+            resultText =
+              "matrix_send_message rejected: 'content' must be a non-empty string. Provide your closing message.";
+            messages.push({
+              role: "tool",
+              tool_call_id: call.id,
+              name: call.function.name,
+              content: resultText,
+            });
+            continue;
+          }
+
+          resultText = await mcp.callTool(call.function.name, { ...args, content: body });
+          try {
+            const sent = JSON.parse(resultText) as { id: string; createdAt: string };
+            closingMessageId = sent.id;
+            await appendEvent(logDir, runId, {
+              type: "message",
+              runId,
+              agentId: "moderator",
+              matrixEventId: sent.id,
+              roomId,
+              content: body,
+              timestamp: sent.createdAt,
+            });
+            resultText = `message posted (${sent.id})`;
+          } catch (parseError) {
+            console.error("Failed to parse matrix_send_message response:", resultText);
+            throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
+          }
+        } else {
+          // Other MCP tools (e.g. matrix_read_room for reading the discussion).
+          resultText = await mcp.callTool(call.function.name, args);
+        }
+
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          name: call.function.name,
+          content: resultText,
+        });
+      }
+    }
+
+    // Record the "Moderator ended Run" event only if STALE and we posted.
+    if (classification === "stale" && closingMessageId) {
+      await appendEvent(logDir, runId, {
+        type: "moderator_ended_run",
+        runId,
+        rationale,
+        messageId: closingMessageId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return {
+      classification,
+      shouldEnd: classification === "stale" && closingMessageId !== null,
+    };
+  }
+
+  /**
+   * The Moderator's continuous event-driven loop, run for the life of the process
+   * (or until it ends the Run by classifying STALE).
+   *
+   * Each iteration blocks on the room long-poll, wakes when activity arrives,
+   * runs an assessment, and either continues waiting (ACTIVE) or ends the Run
+   * (STALE).
+   *
+   * While waiting, emits an agent_heartbeat to provide liveness evidence.
+   */
+  async runLoop(): Promise<void> {
+    const { runId, mcp } = this.config;
+    const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
+    let since: string | undefined;
+
+    for (;;) {
+      if (this.config.isStopped?.()) return;
+
+      await appendEvent(this.config.logDir, runId, {
+        type: "agent_heartbeat",
+        runId,
+        agentId: "moderator",
+        state: "waiting",
+        timestamp: new Date().toISOString(),
+      });
+
+      try {
+        const { hasActivity, nextBatch } = await mcp.waitForActivity({ timeoutMs, since });
+        since = nextBatch;
+        if (hasActivity) {
+          const result = await this.runTurn();
+          if (result.shouldEnd) {
+            // Moderator classified STALE and posted; end the Run.
+            return;
+          }
+        }
+      } catch (err) {
+        console.error("[moderator] waiting for room activity failed; will resume waiting:", err);
+      }
+    }
+  }
+}
