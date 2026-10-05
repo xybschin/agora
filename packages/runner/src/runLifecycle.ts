@@ -77,7 +77,7 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
    */
   async function recordTerminal(
     runId: string,
-    event: RunAbortedEvent | RunCompletedEvent,
+    event: RunAbortedEvent | RunCompletedEvent | RunCompletedByModeratorEvent,
   ): Promise<boolean> {
     if (active?.runId !== runId) return false;
     active = null;
@@ -126,7 +126,7 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
           rationale: outcome.rationale,
           messageId: outcome.messageId,
           timestamp: new Date().toISOString(),
-        } as RunCompletedByModeratorEvent);
+        });
       case "wallClockExceeded":
         return recordTerminal(runId, {
           type: "run_aborted",

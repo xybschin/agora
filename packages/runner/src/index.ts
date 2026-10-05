@@ -136,7 +136,7 @@ async function main(): Promise<void> {
     const result = await superviseRunToTerminal({
       runId,
       scenario,
-      logDir: logsDir,
+      logDir: LOG_DIR,
       budget,
       stopWhen: () => !lifecycle.isActive(),
     });
