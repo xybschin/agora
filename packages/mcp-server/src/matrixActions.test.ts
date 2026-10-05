@@ -117,7 +117,11 @@ describe("matrixActions identity marking", () => {
 
   test("message from different user is not marked", () => {
     const ownUserId = "@alice:localhost";
-    const senderUserId = "@bob:localhost";
+    // Broadened to `string` so the `===` comparison below is type-legal: the two
+    // are intentionally different users, but as bare string literals TypeScript
+    // flags the comparison as impossible (TS2367). The test's intent — a message
+    // from a different user must not be marked as the agent's own — is unchanged.
+    const senderUserId: string = "@bob:localhost";
     const originalContent = "Hi there";
 
     const isOwnMessage = ownUserId === senderUserId;
