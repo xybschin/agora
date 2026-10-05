@@ -220,3 +220,62 @@ export async function joinRoom(
     },
   );
 }
+
+/**
+ * Resolves a room's id from its display name against the homeserver's public
+ * room directory. Each Run's room is created `visibility: public`
+ * (see `createRoom`), so it appears there under the name `roomNameForRun` gave
+ * it. Reclamation (packages/runner/src/reclaim.ts) resolves a runId to its room
+ * by this lookup rather than reading the room id off the transcript's `message`
+ * events, because that id is recorded only on `message` events — a Run that
+ * never sent a message would leave no room id in its transcript, while the
+ * room-name convention always holds.
+ *
+ * The directory is paginated with `since` cursors until a room whose `name`
+ * matches exactly is found or the pages run out; a directory that does not
+ * enumerate (empty chunk, server refusing) returns null so the caller can
+ * report the room as not found rather than fail the whole reclamation.
+ */
+export async function findRoomIdByName(
+  baseUrl: string,
+  accessToken: string,
+  name: string,
+): Promise<string | null> {
+  const PAGE_LIMIT = 100;
+  let since: string | undefined;
+  for (;;) {
+    const params = `limit=${PAGE_LIMIT}${since ? `&since=${encodeURIComponent(since)}` : ""}`;
+    const res = await csRequest<{ chunk?: Array<{ room_id: string; name?: string }>; next_batch?: string }>(
+      baseUrl,
+      "GET",
+      clientPath(`publicRooms?${params}`),
+      { accessToken },
+    );
+    for (const room of res.chunk ?? []) {
+      if (room.name === name) return room.room_id;
+    }
+    const next = res.next_batch;
+    if (!next || !next.length || (res.chunk ?? []).length === 0) return null;
+    since = next;
+  }
+}
+
+/**
+ * Deletes a room outright rather than leaving it as a tombstoned shell. Owned by
+ * the setup account — which created the room at Run start (ADR-0003) — so the
+ * delete succeeds. This is the destructive half of reclamation: a caller (the
+ * reclaim command) must only reach it after the Run's verdict is known to be
+ * terminal, and only when an operator named the room explicitly.
+ */
+export async function deleteRoom(
+  baseUrl: string,
+  accessToken: string,
+  roomId: string,
+): Promise<void> {
+  // The delete endpoint has no room-relative suffix — it is exactly
+  // /rooms/{roomId} — so it is spelt here rather than through roomPath, which
+  // appends a trailing segment and its joining slash.
+  await csRequest(baseUrl, "DELETE", clientPath(`rooms/${encodeURIComponent(roomId)}`), {
+    accessToken,
+  });
+}

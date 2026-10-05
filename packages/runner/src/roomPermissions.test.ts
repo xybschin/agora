@@ -8,7 +8,6 @@ import { roomPermissionMismatches, runRoomPowerLevels } from "./roomPermissions.
 // or can rewrite the power levels (the whole guarantee is gone).
 
 const wanted = runRoomPowerLevels({
-  setupUserId: "@agora-setup:localhost",
   agentUserIds: ["@agora-alex:localhost", "@agora-bri:localhost"],
 });
 
@@ -66,8 +65,20 @@ describe("runRoomPowerLevels", () => {
     }
   });
 
-  test("leaves the setup account above the agents, since it owns the room", () => {
-    expect(wanted.users["@agora-setup:localhost"]).toBeGreaterThan(50);
+  test("does not seat the setup account in users, leaving its 100 to the creator rule", () => {
+    // The setup account owns the room as its creator, and Synapse refuses a
+    // power-levels event whose `users` names the creator ("Creator user ... must
+    // not appear in content.users") because a creator's 100 is immutable and not
+    // an event entry. A live Run died on exactly that 400 (ADR-0003). So the
+    // owner's 100 is the homeserver's creator rule, and the written event names
+    // it nowhere — which is what this pins down.
+    expect(Object.keys(wanted.users)).not.toContain("@agora-setup:localhost");
+    // Every `users` entry is an agent, and all of them sit at the level that
+    // clears `events_default`.
+    for (const level of Object.values(wanted.users)) {
+      expect(level).toBe(wanted.events_default);
+      expect(level).toBeGreaterThan(wanted.users_default);
+    }
   });
 });
 

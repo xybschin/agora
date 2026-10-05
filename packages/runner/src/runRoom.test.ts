@@ -85,7 +85,6 @@ function stubHomeserver(stub: HomeserverStub = {}): FetchCall[] {
 /** The exact power levels the runner writes, spelled out rather than recomputed. */
 const expectedPowerLevels = {
   users: {
-    "@agora-setup:localhost": 100,
     "@agora-alex:localhost": 50,
     "@agora-bri:localhost": 50,
   },

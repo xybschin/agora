@@ -41,12 +41,24 @@ export interface RoomPowerLevels {
 
 /**
  * The agents. High enough to clear `events_default` so an agent can post a
- * message and a reaction, low enough that everything the setup account holds is
- * out of reach.
+ * message and a reaction, low enough that everything above them — every value
+ * set to `SETUP_LEVEL` — is out of reach.
  */
 const AGENT_LEVEL = 50;
 
-/** The setup account, which owns the room and is the only account above an agent. */
+/**
+ * The level everything that decides who else is in the room or what the room is
+ * sits at, and the highest an agent can ever reach.
+ *
+ * It is not named for the setup account in `users`: Synapse (the only
+ * homeserver this repo runs) refuses a power-levels event whose `users` names
+ * the room's creator — "Creator user ... must not appear in content.users" —
+ * because the creator's level is 100 by the creator rule, immutable, and not an
+ * entry in the event. The setup account *is* the room's creator (it calls
+ * `createRoom`), so its 100 is that implicit, homeserver-guaranteed value, not
+ * a `users` entry this harness writes or reads back. See the note in
+ * `runRoomPowerLevels`.
+ */
 const SETUP_LEVEL = 100;
 
 /**
@@ -64,19 +76,26 @@ const READER_LEVEL = 0;
  * threshold so they can speak, and everything that decides *who else is in the
  * room* or *what the room is* sits above the agents, which leaves a Reader at
  * the bottom with no way up.
+ *
+ * The setup account — which owns the room as its creator — is deliberately *not*
+ * an entry in `users`. Synapse refuses a power-levels event whose `users` names
+ * the creator, because a creator's level 100 is granted by the creator rule and
+ * cannot be changed or re-stated (a live Run died on exactly that 400). So the
+ * room's owner sits at 100 implicitly, not because this event says so, and the
+ * read-back that proves what the room holds can only confirm the entries this
+ * harness writes — the agents — plus the thresholds. That a homeserver could
+ * silently keep an owner below the levels is closed off by the creator rule
+ * itself, which is why the owner's 100 needs no entry here.
  */
 export function runRoomPowerLevels(params: {
-  setupUserId: string;
   agentUserIds: readonly string[];
 }): RoomPowerLevels {
-  const { setupUserId, agentUserIds } = params;
+  const { agentUserIds } = params;
 
-  // `users` names the setup account explicitly rather than relying on the
-  // implicit level 100 a creator is given: how that implicit level survives a
-  // caller-supplied power_levels event is exactly the homeserver-specific
-  // behaviour ADR-0003 rejects guessing at, and a setup account demoted to
-  // `users_default` could not invite anyone -- including the Readers.
-  const users: Record<string, number> = { [setupUserId]: SETUP_LEVEL };
+  // `users` names every agent explicitly. The setup account is the creator and
+  // so is already at 100 by the creator rule, which is exactly why it must not
+  // also appear here — see the note above and ADR-0003.
+  const users: Record<string, number> = {};
   for (const userId of agentUserIds) {
     users[userId] = AGENT_LEVEL;
   }

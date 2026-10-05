@@ -87,7 +87,6 @@ export async function createRunRoom(params: {
     accessToken: setupAccessToken,
     roomId,
     powerLevels: runRoomPowerLevels({
-      setupUserId: credentials.matrixSetupUserId,
       agentUserIds: scenario.agents.map(
         (agent) => credentials.agents[agent.id]!.matrixUserId,
       ),
