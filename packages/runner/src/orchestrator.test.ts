@@ -19,7 +19,6 @@ function makeScenario(overrides: Partial<ScenarioConfig> = {}): ScenarioConfig {
     seedMessage: "seed",
     maxRuntimeMs: 10000,
     maxToolStepsPerTurn: 4,
-    memory: { windowSize: 10 },
     budget: { maxTotalTokens: undefined },
     agents: [],
     ...overrides,

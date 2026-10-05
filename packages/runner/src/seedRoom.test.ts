@@ -54,7 +54,6 @@ const scenario: ScenarioConfig = {
   seedMessage: "The floor is yours.",
   maxRuntimeMs: 120000,
   maxToolStepsPerTurn: 6,
-  memory: { windowSize: 20 },
   budget: {},
   agents: ["alex", "bri"].map((id) => ({
     id,

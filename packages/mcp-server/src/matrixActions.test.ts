@@ -153,7 +153,6 @@ describe("stance continuity across ticks", () => {
     const prompt1 = buildSystemPrompt({
       persona: mockPersona,
       topic: "test",
-      readWindowSize: 20,
       isFirstTick: true,
     });
     expect(prompt1).toContain("Your current private stance on the topic is 0.2");
@@ -163,7 +162,6 @@ describe("stance continuity across ticks", () => {
     const prompt2 = buildSystemPrompt({
       persona: mockPersona,
       topic: "test",
-      readWindowSize: 20,
       currentStance: 0.6,
       isFirstTick: false,
     });
@@ -190,7 +188,6 @@ describe("stance continuity across ticks", () => {
       const prompt = buildSystemPrompt({
         persona: mockPersona,
         topic: "test",
-        readWindowSize: 20,
         currentStance: stance,
         isFirstTick: false,
       });

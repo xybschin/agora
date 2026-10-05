@@ -14,7 +14,6 @@ const runtime = new AgentRuntime({
   roomId: env.roomId,
   matrixUserId: env.matrixUserId,
   maxToolStepsPerTick: env.maxToolStepsPerTick,
-  memoryWindowSize: env.memoryWindowSize,
   logDir: env.logDir,
   mcp,
   llm: env.llm,

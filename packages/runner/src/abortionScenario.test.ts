@@ -74,10 +74,9 @@ describe("scenarios/abortion-policy.yaml", () => {
   test("preserves the cast's traits, stances, and runtime tuning", async () => {
     const scenario = await loadScenario(SCENARIO_PATH);
     // Runtime tuning is updated to use wall-clock limit: maxRuntimeMs (wall-clock),
-    // maxToolStepsPerTurn (per-turn tool cap), memory window, and token budget.
+    // maxToolStepsPerTurn (per-turn tool cap), and token budget.
     expect(scenario.maxRuntimeMs).toBe(200_000); // 200 seconds wall-clock limit
     expect(scenario.maxToolStepsPerTurn).toBe(10);
-    expect(scenario.memory.windowSize).toBe(30);
     expect(scenario.budget.maxTotalTokens).toBe(2_000_000);
 
     // Numeric traits and initial stances are preserved verbatim for every agent.

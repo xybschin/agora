@@ -208,7 +208,6 @@ const scenario = {
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
   maxRuntimeMs: 120000,
-  memory: { windowSize: 20 },
   budget: {},
   agents: [agent("alex"), agent("bri")],
 };

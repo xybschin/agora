@@ -142,7 +142,6 @@ function scenarioWith(agentIds: string[], observers?: string[]): ScenarioConfig 
     seedMessage: "The floor is yours.",
     maxRuntimeMs: 120000,
     maxToolStepsPerTurn: 6,
-    memory: { windowSize: 20 },
     budget: {},
     ...(observers ? { observers } : {}),
     agents: agentIds.map((id) => ({

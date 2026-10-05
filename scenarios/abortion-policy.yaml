@@ -15,8 +15,6 @@ seedMessage: >-
   Friday. Please keep this in the family. — Karen
 maxRuntimeMs: 200000
 maxToolStepsPerTurn: 10
-memory:
-  windowSize: 30
 budget:
   maxTotalTokens: 2000000
 agents:

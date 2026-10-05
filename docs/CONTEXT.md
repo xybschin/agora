@@ -95,6 +95,18 @@ Reader, which is present in the room while the Run is live.
 _Avoid_: Reader (the two are easy to conflate; they differ in *when* the
 human is present, not in whether they read)
 
+**Own message history**:
+An agent's only working memory within a Run: the last few messages it has
+posted, quoted verbatim in its system prompt so it recognizes arguments and
+commitments it has already made and does not restate them. It is a fixed,
+hardcoded per-agent queue (the last ~3 posts), not something a Scenario
+configures — there is no Scenario-level "memory" field, and how much of the
+*room* an agent may read is governed by the `matrix_read_room` tool's own
+`limit` parameter, not by the Scenario. Agents are reminded that anything
+older is still visible in the room history if they choose to read it.
+_Avoid_: Scenario `memory` (an old tick-era field, removed; it conflated the
+agent's own commitments with the room). The real memory is this queue.
+
 ## Example dialogue
 
 > **Dev**: Can I see the conversation for the remote-work-policy run?

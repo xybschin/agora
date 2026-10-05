@@ -76,7 +76,6 @@ export function generateComposeFile(params: {
         // network, so they use the container-facing base URL, not the host one.
         MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
         MAX_TOOL_STEPS_PER_TICK: String(scenario.maxToolStepsPerTurn),
-        MEMORY_WINDOW_SIZE: String(scenario.memory.windowSize),
         MCP_URL: "http://mcp_server:3000/mcp",
         LLM_BASE_URL: cred.llmBaseUrl,
         LLM_API_KEY: cred.llmApiKey,
@@ -120,7 +119,6 @@ export function generateComposeFile(params: {
       MATRIX_SETUP_USER_ID: credentials.matrixSetupUserId,
       MATRIX_ACCESS_TOKEN: credentials.matrixSetupAccessToken,
       MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
-      MEMORY_WINDOW_SIZE: String(scenario.memory.windowSize),
       MCP_URL: "http://mcp_server:3000/mcp",
       LLM_BASE_URL: credentials.agents[scenario.agents[0]?.id || ""]?.llmBaseUrl || "http://localhost",
       LLM_API_KEY: credentials.agents[scenario.agents[0]?.id || ""]?.llmApiKey || "test",

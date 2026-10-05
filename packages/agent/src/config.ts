@@ -8,7 +8,6 @@ export interface AgentEnvConfig {
   topic: string;
   roomId: string;
   maxToolStepsPerTick: number;
-  memoryWindowSize: number;
   logDir: string;
   mcpUrl: string;
   matrixAccessToken: string;
@@ -50,7 +49,6 @@ export function loadAgentEnvConfig(): AgentEnvConfig {
     topic: requireEnv("SCENARIO_TOPIC"),
     roomId: requireEnv("MATRIX_ROOM_ID"),
     maxToolStepsPerTick: Number(process.env.MAX_TOOL_STEPS_PER_TICK ?? 6),
-    memoryWindowSize: Number(process.env.MEMORY_WINDOW_SIZE ?? 20),
     logDir: process.env.LOG_DIR ?? "/logs",
     mcpUrl: requireEnv("MCP_URL"),
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),

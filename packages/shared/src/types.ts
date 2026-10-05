@@ -28,11 +28,6 @@ export interface AgentDefinition {
   persona: Persona;
 }
 
-export interface MemoryConfig {
-  /** Max number of recent room messages an agent is told to read per turn. */
-  windowSize: number;
-}
-
 export interface BudgetConfig {
   maxTotalTokens?: number;
   maxTotalCostUsd?: number;
@@ -65,7 +60,6 @@ export interface ScenarioConfig {
   maxRuntimeMs: number;
   /** Hard cap on tool-calling steps within a single agent's turn, to bound runaway loops. */
   maxToolStepsPerTurn: number;
-  memory: MemoryConfig;
   budget: BudgetConfig;
   agents: AgentDefinition[];
   /**

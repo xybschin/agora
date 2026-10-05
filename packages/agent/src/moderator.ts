@@ -6,7 +6,6 @@ export interface ModeratorRuntimeConfig {
   runId: string;
   roomId: string;
   matrixSetupUserId: string;
-  memoryWindowSize: number;
   logDir: string;
   mcp: MatrixMcpClient;
   llm: LlmConfig;
@@ -61,14 +60,13 @@ const CLASSIFY_TOOL: ToolSpec = {
  */
 function buildModeratorSystemPrompt(params: {
   topic: string;
-  readWindowSize: number;
   isFirstTurn: boolean;
 }): string {
-  const { topic, readWindowSize, isFirstTurn } = params;
+  const { topic, isFirstTurn } = params;
   return `You are a neutral Moderator observing a group discussion on the topic: "${topic}".
 
 Your role is to:
-1. Read the recent room messages (you can request up to ${readWindowSize} messages)
+1. Read the recent room messages (requesting as many as you need, up to the tool's limit) so you can judge how the discussion has been going
 2. Classify the discussion as ACTIVE or STALE
 3. Only if STALE, post a closing message
 
@@ -141,7 +139,7 @@ export class ModeratorRuntime {
    * Run should end.
    */
   async runTurn(): Promise<ModeratorTurnResult> {
-    const { runId, roomId, matrixSetupUserId, memoryWindowSize, logDir, mcp, llm } = this.config;
+    const { runId, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
 
     await appendEvent(logDir, runId, {
       type: "agent_heartbeat",
@@ -162,7 +160,6 @@ export class ModeratorRuntime {
         role: "system",
         content: buildModeratorSystemPrompt({
           topic: "the discussion",
-          readWindowSize: memoryWindowSize,
           isFirstTurn: this.lastTurnStartCount === 0,
         }),
       },

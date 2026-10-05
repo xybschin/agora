@@ -176,9 +176,6 @@ export const scenarioConfigSchema = z.object({
   seedMessage: z.string(),
   maxRuntimeMs: z.number().int().positive(),
   maxToolStepsPerTurn: z.number().int().positive().default(6),
-  memory: z.object({
-    windowSize: z.number().int().positive().default(20),
-  }),
   budget: z.object({
     maxTotalTokens: z.number().int().positive().optional(),
     maxTotalCostUsd: z.number().positive().optional(),

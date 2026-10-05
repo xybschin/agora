@@ -12,7 +12,6 @@ export interface AgentRuntimeConfig {
   roomId: string;
   matrixUserId: string;
   maxToolStepsPerTick: number;
-  memoryWindowSize: number;
   logDir: string;
   mcp: MatrixMcpClient;
   llm: LlmConfig;
@@ -199,7 +198,7 @@ export class AgentRuntime {
   private turn = 0;
 
   async runTurn(): Promise<TurnResult> {
-    const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, memoryWindowSize, logDir, mcp, llm } =
+    const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, logDir, mcp, llm } =
       this.config;
 
     this.turn += 1;
@@ -229,7 +228,6 @@ export class AgentRuntime {
         content: buildSystemPrompt({
           persona: agentDef.persona,
           topic,
-          readWindowSize: memoryWindowSize,
           currentStance: this.currentStance,
           isFirstTick: turn === 1,
           ownMessageHistory: this.ownMessageHistory,

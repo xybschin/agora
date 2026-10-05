@@ -7,8 +7,6 @@ seedMessage: >
   Full RTO five days a week, yes or no? Curious where people land and why.
 maxRuntimeMs: 25000
 maxToolStepsPerTurn: 6
-memory:
-  windowSize: 20
 budget:
   maxTotalTokens: 2000000
 agents:

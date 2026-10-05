@@ -64,7 +64,7 @@ try {
 // ---- 2. Design heuristics (only if the document is at least structurable) ----
 const agents = (raw as { agents?: unknown[] } | undefined)?.agents;
 if (Array.isArray(agents) && agents.length >= 2) {
-  const designProblems = designChecks(raw as { agents: AgentRow[]; ticks?: unknown; maxToolStepsPerTick?: unknown });
+  const designProblems = designChecks(raw as { agents: AgentRow[]; maxRuntimeMs?: unknown });
   if (designProblems.length > 0) {
     designProblems.forEach((p) => console.error(p));
     process.exit(1);
@@ -80,7 +80,7 @@ const outName = process.argv[3] ?? resolve(REPO_ROOT, "scenarios", `${config.nam
 const rendered = renderYaml(config);
 await writeFile(outName, rendered, "utf8");
 console.log(`wrote ${outName}`);
-console.log(`agents: ${config.agents.length}, ticks: ${config.ticks}`);
+console.log(`agents: ${config.agents.length}, maxRuntimeMs: ${config.maxRuntimeMs}`);
 console.log(
   config.agents.map((a) => `  ${a.id.padEnd(10)} ${a.persona.displayName.padEnd(8)} C=${a.persona.traits.conformity} A=${a.persona.traits.assertiveness} O=${a.persona.traits.opennessToEvidence} S=${a.persona.initialStance}`).join("\n"),
 );
@@ -98,7 +98,7 @@ interface AgentRow {
   };
 }
 
-function designChecks(input: { agents: AgentRow[]; ticks?: unknown; maxToolStepsPerTick?: unknown }): string[] {
+function designChecks(input: { agents: AgentRow[]; maxRuntimeMs?: unknown }): string[] {
   const problems: string[] = [];
   const rows = input.agents;
   const trait = (r: AgentRow, k: "conformity" | "assertiveness" | "opennessToEvidence") =>
@@ -146,9 +146,13 @@ function designChecks(input: { agents: AgentRow[]; ticks?: unknown; maxToolSteps
     }
   }
 
-  const ticks = num(input.ticks);
-  if (ticks !== undefined && ticks < 3) {
-    problems.push(`design: ${ticks} ticks is very short — phenomena need several rounds to develop; consider >= 5.`);
+  // Wall-clock limit too short to allow several exchanges. Agents are
+  // event-driven (not tick-scheduled), so a discussion needs enough running
+  // time for multiple turns each; a sub-minute cap usually ends the Run before
+  // any phenomenon can develop.
+  const maxRuntimeMs = num(input.maxRuntimeMs);
+  if (maxRuntimeMs !== undefined && maxRuntimeMs < 60_000) {
+    problems.push(`design: maxRuntimeMs of ${maxRuntimeMs}ms is very short — events, not ticks, drive turns, so give the discussion room for several exchanges; consider >= 120000 (2 minutes).`);
   }
   return problems;
 }
@@ -158,10 +162,8 @@ function renderYaml(c: ScenarioConfigLike): string {
     name: c.name,
     topic: c.topic,
     seedMessage: c.seedMessage,
-    ticks: c.ticks,
-    tickIntervalMs: c.tickIntervalMs,
-    maxToolStepsPerTick: c.maxToolStepsPerTick,
-    memory: c.memory,
+    maxRuntimeMs: c.maxRuntimeMs,
+    maxToolStepsPerTurn: c.maxToolStepsPerTurn,
     budget: c.budget,
     agents: c.agents.map((a) => ({
       id: a.id,
@@ -181,10 +183,8 @@ type ScenarioConfigLike = {
   name: string;
   topic: string;
   seedMessage: string;
-  ticks: number;
-  tickIntervalMs: number;
-  maxToolStepsPerTick: number;
-  memory: { windowSize: number };
+  maxRuntimeMs: number;
+  maxToolStepsPerTurn: number;
   budget: { maxTotalTokens?: number; maxTotalCostUsd?: number };
   agents: { id: string; persona: Record<string, unknown> }[];
   observers?: string[];

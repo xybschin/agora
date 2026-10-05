@@ -13,8 +13,6 @@ seedMessage: >-
   why.
 maxRuntimeMs: 30000
 maxToolStepsPerTurn: 6
-memory:
-  windowSize: 20
 budget:
   maxTotalTokens: 2000000
 agents:

@@ -43,11 +43,9 @@ would *manufacture* a phenomenon rather than *test* it.
 {
   "name": "lowercase-kebab",                 // also recapitalized into the file name
   "topic": "One-two sentence situation the room is reacting to.",
-  "seedMessage": "The moderator post before tick 1 — written as if from leadership. Neutral-ish bait.",
-  "ticks": 5,
-  "tickIntervalMs": 5000,
-  "maxToolStepsPerTick": 6,
-  "memory": { "windowSize": 20 },
+  "seedMessage": "The setup-account post before the discussion starts — written as if from leadership. Neutral-ish bait.",
+  "maxRuntimeMs": 120000,
+  "maxToolStepsPerTurn": 6,
   "budget": { "maxTotalTokens": 2000000 },
   "agents": [
     {
@@ -99,9 +97,9 @@ Rules of thumb that make phenomena *observable* rather than noise:
 
 ### 3. Validate and render
 Run `validate.mts` (above). It checks the schema **and** the design heuristics
-(flat cast, no stance spread, isolated low-assertiveness target, too few
-ticks). Fix anything it reports and re-run. It exits 0 and writes the YAML only
-when everything is clean.
+(flat cast, no stance spread, isolated low-assertiveness target, too short a
+wall-clock limit). Fix anything it reports and re-run. It exits 0 and writes
+the YAML only when everything is clean.
 
 ### 4. Confirm and run
 The skill is done when `scenarios/<name>.yaml` is written and validates. The

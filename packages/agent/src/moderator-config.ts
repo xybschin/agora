@@ -6,7 +6,6 @@ export interface ModeratorEnvConfig {
   roomId: string;
   matrixSetupUserId: string;
   matrixAccessToken: string;
-  memoryWindowSize: number;
   logDir: string;
   mcpUrl: string;
   llm: { baseUrl: string; apiKey: string; model: string; sampling?: ResolvedSampling };
@@ -34,7 +33,6 @@ export function loadModeratorEnvConfig(): ModeratorEnvConfig {
     roomId: requireEnv("MATRIX_ROOM_ID"),
     matrixSetupUserId: requireEnv("MATRIX_SETUP_USER_ID"),
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),
-    memoryWindowSize: Number(process.env.MEMORY_WINDOW_SIZE ?? 20),
     logDir: process.env.LOG_DIR ?? "/logs",
     mcpUrl: requireEnv("MCP_URL"),
     llm: {

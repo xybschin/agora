@@ -89,11 +89,9 @@ Required fields, all enforced by `parseScenarioConfig`:
 | --- | --- | --- |
 | `name` | string | lowercase-kebab; also becomes `scenarios/<name>.yaml` |
 | `topic` | string | the situation being reacted to |
-| `seedMessage` | string | moderator/system post before tick 1 |
-| `ticks` | int > 0 | number of rounds |
-| `tickIntervalMs` | int > 0, default `60000` | pacing; the example uses `5000` |
-| `maxToolStepsPerTick` | int > 0, default `6` | bounds runaway tool loops per agent per tick |
-| `memory.windowSize` | int > 0, default `20` | how many recent room messages an agent reads per tick |
+| `seedMessage` | string | posted by the setup account before the discussion starts |
+| `maxRuntimeMs` | int > 0 | wall-clock runtime limit in ms (ADR-0008); the backstop if neither the agents nor the Moderator closes the Run |
+| `maxToolStepsPerTurn` | int > 0, default `6` | bounds runaway tool loops per agent per turn |
 | `budget.maxTotalTokens` | int > 0, optional | token cap for the run |
 | `budget.maxTotalCostUsd` | number > 0, optional | cost cap for the run |
 | `agents` | array, **≥ 2** | each: `{ id, persona }` |
@@ -104,6 +102,7 @@ Required fields, all enforced by `parseScenarioConfig`:
 | `persona.traits.assertiveness` | number 0–1 | |
 | `persona.traits.opennessToEvidence` | number 0–1 | |
 | `persona.initialStance` | number −1…1 | seeded stance |
+| `observers` | array of Matrix user ids, optional | human Readers invited into each Run's room (ADR-0003) |
 
 A Scenario is a **template** — each execution produces an independent Run with
 its own transcript in `logs/<runId>/events.jsonl` (see `docs/CONTEXT.md`).
@@ -122,8 +121,9 @@ its own transcript in `logs/<runId>/events.jsonl` (see `docs/CONTEXT.md`).
    - *Isolated low-assertiveness target* — a low-`assertiveness` agent with no
      assertive ally near its stance: a target by construction, which
      manufactures rather than tests bullying.
-   - *Too few ticks* — fewer than 3 rounds: phenomena need several rounds to
-     develop.
+   - *Too short a wall-clock limit* — `maxRuntimeMs` under 60s: turns are driven
+     by events, not ticks, so a sub-minute cap usually ends the Run before any
+     phenomenon can develop.
 3. **Render**: dumps the validated object to
    `scenarios/<name>.yaml` (block scalars for the multi-line strings, quoted
    to keep YAML-safe).

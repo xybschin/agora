@@ -53,13 +53,12 @@ function traitDirectives(persona: Persona): string {
 export function buildSystemPrompt(params: {
   persona: Persona;
   topic: string;
-  readWindowSize: number;
   currentStance?: number;
   isFirstTick?: boolean;
   /** The agent's own recently posted messages (oldest first); quoted so it does not restate them. */
   ownMessageHistory?: readonly string[];
 }): string {
-  const { persona, topic, readWindowSize, currentStance, isFirstTick, ownMessageHistory } = params;
+  const { persona, topic, currentStance, isFirstTick, ownMessageHistory } = params;
 
   return `You are ${persona.displayName}, a participant in a group text discussion in a Matrix chat room.
 
@@ -78,7 +77,7 @@ Do not restate an argument, commitment, or position you have already made unless
 
 You interact with a live Matrix chat room through tools. The room is already
 wired up on your side -- you never name it, and no tool asks you for a room id:
-1. matrix_read_room -- read up to ${readWindowSize} recent messages if you need to see what's been said since you last checked. You don't have to read every turn if you already have enough context. Messages from **yourself** are marked "**your message:**" so you can recognize your own contributions.
+1. matrix_read_room -- read recent messages if you need to see what's been said since you last checked, requesting as many as you need (up to the tool's limit). You don't have to read every turn if you already have enough context. Messages from **yourself** are marked "**your message:**" so you can recognize your own contributions.
 2. matrix_send_message -- post a message. You don't have to post every turn; silence is a valid choice if you have nothing to add. Keep it short, like a real chat message, not an essay. Set replyToEventId when directly responding to a specific person.
 3. update_stance -- record your current private stance and a one-sentence rationale. Call this exactly once per turn, even if your stance hasn't changed.
 

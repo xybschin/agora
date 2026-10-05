@@ -107,7 +107,6 @@ function makeRuntime(overrides: Record<string, unknown> = {}) {
     roomId: "!room:localhost",
     matrixUserId: "@alice:localhost",
     maxToolStepsPerTick: 10,
-    memoryWindowSize: 20,
     logDir: "/tmp/agora-loop-test",
     mcp: mcp as never,
     llm: { baseUrl: "http://test/v1", apiKey: "k", model: "m" },
@@ -244,7 +243,6 @@ describe("buildSystemPrompt own-message section", () => {
   const base = {
     persona: AGENT.persona,
     topic: "Should the speed limit change?",
-    readWindowSize: 20,
   };
 
   test("with no history, states nothing has been posted yet", () => {
@@ -277,7 +275,6 @@ describe("buildSystemPrompt speaking contract", () => {
   const base = {
     persona: AGENT.persona, // conformity 0.5, assertiveness 0.5, openness 0.5
     topic: "Should the speed limit change?",
-    readWindowSize: 20,
     ownMessageHistory: [],
   };
 
@@ -571,7 +568,6 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
     const prompt = buildSystemPrompt({
       persona: stancedAgent.persona,
       topic: "Should the speed limit change?",
-      readWindowSize: 20,
       currentStance: runtime.getStance(),
       isFirstTick: false,
       ownMessageHistory: [],
