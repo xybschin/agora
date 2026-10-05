@@ -108,6 +108,26 @@ export function generateComposeFile(params: {
     },
   };
 
+  // The Moderator service runs the setup account's continuous assessment loop.
+  // It shares the MCP server with agents and inherits the room id via environment.
+  services.moderator = {
+    build: { context: "..", dockerfile: "docker/moderator.Dockerfile" },
+    networks: mcpNetworksWithInfra,
+    volumes: ["../logs:/logs"],
+    environment: {
+      RUN_ID: runId,
+      MATRIX_ROOM_ID: roomId,
+      MATRIX_SETUP_USER_ID: credentials.matrixSetupUserId,
+      MATRIX_ACCESS_TOKEN: credentials.matrixSetupAccessToken,
+      MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
+      MEMORY_WINDOW_SIZE: String(scenario.memory.windowSize),
+      MCP_URL: "http://mcp_server:3000/mcp",
+      LLM_BASE_URL: credentials.agents[scenario.agents[0]?.id || ""]?.llmBaseUrl || "http://localhost",
+      LLM_API_KEY: credentials.agents[scenario.agents[0]?.id || ""]?.llmApiKey || "test",
+      LLM_MODEL: credentials.agents[scenario.agents[0]?.id || ""]?.llmModel || "test",
+    },
+  };
+
   const compose = { services, networks };
   return { yamlText: yaml.dump(compose), agentPorts };
 }
