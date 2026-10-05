@@ -29,7 +29,7 @@ export interface AgentDefinition {
 }
 
 export interface MemoryConfig {
-  /** Max number of recent room messages an agent is told to read per tick. */
+  /** Max number of recent room messages an agent is told to read per turn. */
   windowSize: number;
 }
 

@@ -538,7 +538,7 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
       assistant(),
     ]);
 
-    // The persisted, per-tick stance is unchanged (prior value), not NaN.
+    // The persisted stance is unchanged (prior value), not NaN.
     expect(runtime.getStance()).toBe(PRIOR);
     expect(Number.isNaN(runtime.getStance())).toBe(false);
 

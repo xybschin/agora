@@ -3,7 +3,7 @@ import type { ScenarioConfig, CredentialsFile } from "@agora/shared";
 
 export interface ComposeGenerationResult {
   yamlText: string;
-  /** agentId -> host port for the orchestrator to call POST /tick on. */
+  /** agentId -> host port for the runner's health check probe. */
   agentPorts: Record<string, number>;
 }
 

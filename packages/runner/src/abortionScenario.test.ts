@@ -75,7 +75,7 @@ describe("scenarios/abortion-policy.yaml", () => {
     const scenario = await loadScenario(SCENARIO_PATH);
     // Runtime tuning is updated to use wall-clock limit: maxRuntimeMs (wall-clock),
     // maxToolStepsPerTurn (per-turn tool cap), memory window, and token budget.
-    expect(scenario.maxRuntimeMs).toBe(200_000); // 20 ticks * 10s per tick
+    expect(scenario.maxRuntimeMs).toBe(200_000); // 200 seconds wall-clock limit
     expect(scenario.maxToolStepsPerTurn).toBe(10);
     expect(scenario.memory.windowSize).toBe(30);
     expect(scenario.budget.maxTotalTokens).toBe(2_000_000);

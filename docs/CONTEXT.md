@@ -30,14 +30,21 @@ Exactly one of **aborted**, **completed**, or **incomplete**:
   refused the permissions the Scenario asked for, the token budget was
   blown, or the Run was cancelled with SIGINT/SIGTERM. The event's
   `reason` says which.
-- **completed** — the transcript carries a `run_completed` event, which
-  the runner writes only after every tick has run. Success is *recorded*,
-  never inferred from the tick count: a Run whose last tick's events
-  landed and then died before recording completion is **incomplete**, not
-  completed.
+- **completed** — the transcript carries either a `run_completed` event
+  (written by the runner when the Moderator decides the Run is over and
+  records it, the intended and normal path) or a `moderator_ended_run` event
+  (the Moderator itself records this when it sends its closing message).
+  Success is *recorded*, never inferred from tick count or activity level:
+  a Run whose last events landed and then died before recording completion
+  is **incomplete**, not completed.
 - **incomplete** — a `run_started` event with no terminal event after it:
   the Run began and never said how it ended. A hard kill (SIGKILL, OOM)
   cannot be caught, so this is the honest signature of a crashed Run.
+
+Wall-clock timeout (when the Run exceeds `maxRuntimeMs`) is also an
+abortion path and records `run_aborted` with reason "wall-clock timeout",
+the backstop safety limit when neither the agents nor the Moderator bring
+the Run to closure.
 
 Transcripts written before `run_started`/`run_completed` existed carry
 neither, and are the one exception: for those, completion falls back to
@@ -65,6 +72,21 @@ invisible to the population being observed.
 _Avoid_: Admin, moderator, lurker (all Matrix or chat-culture terms for
 roles with capabilities a Reader does not have — an admin has *more*
 power than the agents, which is the opposite of a Reader)
+
+**Moderator**:
+The setup account (also used for room creation and agent invites) joined
+to the room with display name "Moderator" as a silent, active participant.
+Unlike a Reader (who is read-only), a Moderator speaks exactly once per Run:
+when it decides the discussion is complete and ends the Run with a closing
+message. The Moderator is the only entity that can decide a Run is over
+(outside of budget overflow or operator cancellation). It is an agent in
+the sense of being always-active and participating in the room, but unlike
+the conversation agents it takes no LLM turns and makes only one choice per
+Run: when to close.
+_Avoid_: Conflating with Reader (a Moderator actively participates and
+decides the Run's end; a Reader is silent and observes); conflating with
+the conversation agents (which take continuous turns driven by room
+activity; the Moderator takes no LLM turns, only decides completion)
 
 **Observer**:
 A human researcher reviewing a Run's transcript after it has finished, with

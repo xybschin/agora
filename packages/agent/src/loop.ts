@@ -89,7 +89,7 @@ export function buildTurnMessage({
 const OWN_MESSAGE_HISTORY_MAX = 3;
 
 /**
- * The limit the runtime requests when counting room messages for the per-tick
+ * The limit the runtime requests when counting room messages for the per-turn
  * news (see countRoomMessages): the tool's maximum, so the count is a measure
  * of total room growth rather than a value capped at a short window. Mirrors
  * matrixReadRoomSchema's max; kept separate so the two intents can drift
@@ -117,8 +117,8 @@ const STANCE_TOOL: ToolSpec = {
 /**
  * Runs one agent's tool-calling loop: the model itself decides when to call
  * matrix_read_room / matrix_send_message / update_stance, one round of
- * tool-calls at a time, until it stops calling tools or hits
- * maxToolStepsPerTick (the safety cap against runaway loops, Q16 + Q21).
+ * tool-calls at a time, until it stops calling tools or hits the per-turn
+ * tool-step limit (the safety cap against runaway loops, Q16 + Q21).
  */
 export class AgentRuntime {
   private currentStance: number;
@@ -179,8 +179,6 @@ export class AgentRuntime {
     return this.ownMessageHistory;
   }
 
-  /** The per-tick user message most recently built. Exposed for tests. */
-  private lastTickMessage = "";
   /** The per-turn user message most recently built. Exposed for tests. */
   private lastTurnMessage = "";
   /** Exposed for tests. */
