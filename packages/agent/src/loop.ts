@@ -1,5 +1,5 @@
 import type { AgentDefinition } from "@agora/shared";
-import { appendEvent } from "@agora/shared";
+import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
@@ -16,18 +16,30 @@ export interface AgentRuntimeConfig {
   logDir: string;
   mcp: MatrixMcpClient;
   llm: LlmConfig;
+  /**
+   * How long each long-poll for new room activity blocks before the loop gives
+   * up and re-waits. Defaults to the shared tool's max (30s) but is injected so
+   * tests can drive the loop with a short wait.
+   */
+  waitTimeoutMs?: number;
+  /**
+   * Optional stop predicate, checked at the top of each loop iteration; when it
+   * returns true the loop returns cleanly. In production the loop runs for the
+   * life of the process (the predicate is usually absent, so the loop never
+   * stops on its own); it exists as a test seam to bound an otherwise-infinite
+   * loop and as the hook a graceful stop could use.
+   */
+  isStopped?: () => boolean;
 }
 
-export interface TickResult {
+export interface TurnResult {
   stance: number;
   usage: { promptTokens: number; completionTokens: number };
 }
 
-export interface TickMessageParams {
-  /** The current tick, 1-based (N). */
-  tick: number;
-  /** The total number of ticks in the Run (M). */
-  totalTicks: number;
+export interface TurnMessageParams {
+  /** The agent's turn number, 1-based, monotonic per Run. */
+  turn: number;
   /** Room messages that arrived since the agent's last turn; 0 = nothing new. */
   newMessages: number;
   /** The agent's most recent own post, if any, quoted so it is not restated. */
@@ -35,23 +47,24 @@ export interface TickMessageParams {
 }
 
 /**
- * Builds the per-tick user message that replaces the frozen "Tick N: it is
- * your turn" (mechanism C: no news in per-tick prompts). Carries the three
- * deltas the turn should act on -- where we are in the Run, what arrived since
- * the last turn, and what the agent itself last said so it does not restate it
- * -- instead of an invitation that reads identically every tick.
+ * Builds the per-turn user message that replaces the frozen "Tick N: it is
+ * your turn" (mechanism C: no news in per-tick prompts). Carries the two
+ * deltas the turn should act on -- what arrived since the last turn, and what
+ * the agent itself last said so it does not restate it -- instead of an
+ * invitation that reads identically every turn. The per-agent turn counter
+ * keeps a sense of sequence now that there is no global tick to number the run
+ * by; the turn is driven by activity, not by a schedule.
  *
  * Kept short (a hard cap around 200 chars): the news is context for the turn,
  * not the conversation itself, and a long preamble would crowd the model's
  * budget for the room it reads afterwards.
  */
-export function buildTickMessage({
-  tick,
-  totalTicks,
+export function buildTurnMessage({
+  turn,
   newMessages,
   ownLastMessage,
-}: TickMessageParams): string {
-  const head = `Tick ${tick} of ${totalTicks}.`;
+}: TurnMessageParams): string {
+  const head = `Turn ${turn}.`;
   const news =
     newMessages <= 0
       ? ` Nothing new since your last turn.`
@@ -120,16 +133,16 @@ export class AgentRuntime {
   private ownMessageHistory: string[] = [];
 
   /**
-   * The room's message count as of the last tick's start, as observed by the
+   * The room's message count as of the last turn's start, as observed by the
    * runtime's own light read (see countRoomMessages). The delta between this
-   * and the count at the current tick's start is what runTick reports as "new
-   * since your last turn". Tick 1 has no prior turn, so it reports nothing new.
+   * and the count at the current turn's start is what runTurn reports as "new
+   * since your last turn". Turn 1 has no prior turn, so it reports nothing new.
    */
   private lastTurnStartCount = 0;
 
   /**
    * Best-effort count of messages currently in the room, via one matrix_read_room
-   * issued by the runtime itself (not the model) so the per-tick message can say
+   * issued by the runtime itself (not the model) so the per-turn message can say
    * "new since your last turn" about messages the agent has not seen yet.
    *
    * Requests the tool's maximum limit (100, the schema cap) rather than the
@@ -139,7 +152,7 @@ export class AgentRuntime {
    *
    * Deliberately never throws: the news is a nicety, not a reason to lose a
    * turn. Any failure -- homeserver hiccup, malformed response -- degrades to
-   * "no new messages", keeping silent no-op ticks valid.
+   * "no new messages", keeping silent no-op turns valid.
    */
   private async countRoomMessages(): Promise<number | null> {
     try {
@@ -168,9 +181,11 @@ export class AgentRuntime {
 
   /** The per-tick user message most recently built. Exposed for tests. */
   private lastTickMessage = "";
+  /** The per-turn user message most recently built. Exposed for tests. */
+  private lastTurnMessage = "";
   /** Exposed for tests. */
-  getLastTickMessage(): string {
-    return this.lastTickMessage;
+  getLastTurnMessage(): string {
+    return this.lastTurnMessage;
   }
 
   /**
@@ -179,13 +194,13 @@ export class AgentRuntime {
    * per agent and per Run by construction (each Run gets fresh containers and
    * a fresh runtime), and the per-agent answer to the global tick bracket it
    * replaces: with no shared tick, each agent's own turn pair is its liveness
-   * evidence. In the current per-tick world one turn runs per `runTick` call,
-   * so the counter advances in lockstep with the scheduling tick; it stays a
-   * per-agent counter regardless of what drives the loop.
+   * evidence. In the event-driven world one turn runs per wake (see runLoop),
+   * driven by room activity rather than a schedule; the counter stays a
+   * per-agent count regardless of what drives the loop.
    */
   private turn = 0;
 
-  async runTick(tick: number, totalTicks: number): Promise<TickResult> {
+  async runTurn(): Promise<TurnResult> {
     const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, memoryWindowSize, logDir, mcp, llm } =
       this.config;
 
@@ -203,12 +218,12 @@ export class AgentRuntime {
     const tools = [...mcpTools, STANCE_TOOL];
 
     // The runtime counts messages itself (rather than depending on whether the
-    // model happens to read) so the per-tick news is timely, not stale. The
+    // model happens to read) so the per-turn news is timely, not stale. The
     // count feeds newMessages below; an unreadable room silently yields
-    // "nothing new" rather than failing the tick.
+    // "nothing new" rather than failing the turn.
     const currentCount = await this.countRoomMessages();
     const newMessages =
-      tick === 1 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
+      turn === 1 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
 
     const messages: ChatMessage[] = [
       {
@@ -218,22 +233,21 @@ export class AgentRuntime {
           topic,
           readWindowSize: memoryWindowSize,
           currentStance: this.currentStance,
-          isFirstTick: tick === 1,
+          isFirstTick: turn === 1,
           ownMessageHistory: this.ownMessageHistory,
         }),
       },
       {
         role: "user",
-        content: buildTickMessage({
-          tick,
-          totalTicks,
+        content: buildTurnMessage({
+          turn,
           newMessages,
           ownLastMessage: this.ownMessageHistory[this.ownMessageHistory.length - 1],
         }),
       },
     ];
-    this.lastTickMessage = (messages[1] as { content: string }).content;
-    // Seal the count this turn started at, so the next tick reports exactly what
+    this.lastTurnMessage = (messages[1] as { content: string }).content;
+    // Seal the count this turn started at, so the next turn reports exactly what
     // arrived between turns. On a failed read keep the previous baseline (no
     // news rather than an invented jump).
     this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
@@ -264,7 +278,7 @@ export class AgentRuntime {
       }
 
       for (const call of message.tool_calls) {
-        // Malformed model arguments must not drop the tick. Degrade to the raw
+        // Malformed model arguments must not drop the turn. Degrade to the raw
         // string so the tool still sees something and the turn continues; the
         // model can self-correct on the tool's response.
         let args: Record<string, unknown>;
@@ -277,7 +291,7 @@ export class AgentRuntime {
 
         if (call.function.name === "update_stance") {
           // Defense-in-depth: the model's args are parsed loosely (a malformed
-          // call must not drop the tick), so the stance value reaching here may
+          // call must not drop the turn), so the stance value reaching here may
           // not be a number. Guard on a finite-number check -- NOT on emptiness
           // (Number("") is 0, not NaN) -- so a bad argument can never poison the
           // agent's persistent private stance into NaN, which would otherwise
@@ -315,7 +329,7 @@ export class AgentRuntime {
           }
         } else {
           if (call.function.name === "matrix_send_message") {
-            // A model that emits the call without a body must not drop the tick
+            // A model that emits the call without a body must not drop the turn
             // or reach the homeserver: `content` is required, and posting an
             // empty string would only land a meaningless event in the room. So a
             // missing or non-string body is refused here and returned as a tool
@@ -323,9 +337,9 @@ export class AgentRuntime {
             // next chatCompletion sees it back in `messages`) -- the same
             // self-correction path update_stance uses for a bad value, and the
             // same principle as the malformed-JSON guard above. Throwing, as a
-            // genuine homeserver rejection does, would abort the tick without
+            // genuine homeserver rejection does, would abort the turn without
             // ever telling the model why, and a run would repeat the same bad
-            // call every tick.
+            // call every turn.
             const body = typeof args.content === "string" ? args.content : "";
             if (body.trim().length === 0) {
               resultText =
@@ -385,13 +399,13 @@ export class AgentRuntime {
         runId,
         agentId,
         stance: this.currentStance,
-        rationale: "carried over -- agent did not call update_stance this tick",
+        rationale: "carried over -- agent did not call update_stance this turn",
         timestamp: new Date().toISOString(),
       });
     }
 
     // Close the turn bracket. The bracket is intentionally asymmetric: `turn_ended`
-    // is only reached when the turn runs to completion — if runTick throws part-way
+    // is only reached when the turn runs to completion — if runTurn throws part-way
     // (a hard homeserver rejection of a send, say) the `agent_turn_started` is left
     // unclosed. That openness is the whole point: an unclosed `agent_turn_started`
     // is the per-agent "this turn never completed" signature, the liveness evidence
@@ -408,5 +422,63 @@ export class AgentRuntime {
       stance: this.currentStance,
       usage: { promptTokens: totalPromptTokens, completionTokens: totalCompletionTokens },
     };
+  }
+
+  /**
+   * The agent's continuous event-driven loop, run for the life of the process.
+   * Each iteration blocks on the room long-poll (`matrix_wait_for_activity`,
+   * the tool the model never sees) rather than sleeping a fixed interval: it
+   * wakes as soon as new activity arrives, runs a turn, then goes straight back
+   * to waiting.
+   *
+   * While waiting, the runtime emits an `agent_heartbeat` with state
+   * "waiting" — the per-agent liveness evidence that replaces the liveness the
+   * old global tick bracket provided for free (no more shared tick to group
+   * events by). The heartbeat is written *before* each wait, so a container
+   * that has gone quiet still leaves a stream of liveness proof while it waits
+   * for the room.
+   *
+   * The `since` resume token is threaded through the waits: each /sync returns
+   * a `next_batch` that the next wait passes back, so the loop tracks the room
+   * from where it left off rather than re-reading everything since the agent
+   * joined. A timed-out wait with nothing new is a normal result — the loop
+   * just re-waits with the fresh token.
+   *
+   * A transient failure *waiting* (a dropped connection, a homeserver hiccup)
+   * must never crash the process or end the Run: it is caught, logged, and the
+   * loop resumes waiting. The `since` token is only advanced on a successful
+   * wait, so a failed wait loses nothing and retries from the same position.
+   * Turn failures are handled inside `runTurn` (its self-correction guards);
+   * this loop only guards the waiting boundary, because a waiting failure is
+   * the failure mode that used to kill a Run on a Matrix blip.
+   */
+  async runLoop(): Promise<void> {
+    const { runId, agentId, mcp } = this.config;
+    const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
+    let since: string | undefined;
+
+    for (;;) {
+      if (this.config.isStopped?.()) return;
+
+      await appendEvent(this.config.logDir, runId, {
+        type: "agent_heartbeat",
+        runId,
+        agentId,
+        state: "waiting",
+        timestamp: new Date().toISOString(),
+      });
+
+      try {
+        const { hasActivity, nextBatch } = await mcp.waitForActivity({ timeoutMs, since });
+        since = nextBatch;
+        if (hasActivity) {
+          await this.runTurn();
+        }
+      } catch (err) {
+        // A dropped long-poll is transient: log and resume waiting rather than
+        // letting the agent process die (which would end its half of the Run).
+        console.error(`[${agentId}] waiting for room activity failed; will resume waiting:`, err);
+      }
+    }
   }
 }

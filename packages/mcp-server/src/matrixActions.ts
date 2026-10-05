@@ -215,3 +215,54 @@ export async function addReaction(
     },
   );
 }
+
+export interface WaitForActivityResult {
+  /** True if new room activity (a message or reaction) arrived during the wait. */
+  hasActivity: boolean;
+  /** Resume token (`next_batch`) to pass as `since` on the next wait. */
+  nextBatch: string;
+}
+
+/**
+ * Long-polls the room for new activity via the Matrix Client-Server /sync
+ * endpoint (the CS-API's native long-poll), waking as soon as a message or
+ * reaction lands or the bounded timeout elapses. The `timeout` query param
+ * tells the homeserver to hold the response open; `since` is a `next_batch`
+ * resume token so a later wait starts where this one left off instead of
+ * re-reading the whole room.
+ *
+ * The filter restricts the timeline to the same event types the read tool
+ * surfaces (`m.room.message`, `m.reaction`), so "new activity" means exactly
+ * what the agent would act on and ignores state noise. `hasActivity` is true
+ * whenever such a timeline event arrived. A wait that times out with nothing
+ * new is a normal success: it returns `hasActivity: false`, not an error — the
+ * loop just goes back to waiting.
+ *
+ * `roomId` comes from the server's bound MATRIX_ROOM_ID (the handler resolves
+ * it from the environment), never from a model-supplied tool argument.
+ */
+export async function waitForActivity(
+  client: MatrixClient,
+  roomId: string,
+  timeoutMs: number,
+  since?: string,
+): Promise<WaitForActivityResult> {
+  const params = new URLSearchParams({
+    timeout: String(timeoutMs),
+    filter: JSON.stringify({
+      room: { timeline: { types: ["m.room.message", "m.reaction"] } },
+    }),
+  });
+  if (since) params.set("since", since);
+
+  const data = await csRequest<{
+    next_batch?: string;
+    rooms?: { join?: Record<string, { timeline?: { events?: unknown[] } }> };
+  }>(client, "GET", `/sync?${params.toString()}`);
+
+  const events = data.rooms?.join?.[roomId]?.timeline?.events ?? [];
+  return {
+    hasActivity: events.length > 0,
+    nextBatch: data.next_batch ?? (since ?? ""),
+  };
+}

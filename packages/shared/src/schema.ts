@@ -39,6 +39,44 @@ export const matrixAddReactionSchema = z.object({
 });
 
 /**
+ * The name of the agent-runtime long-poll tool. This tool is part of the shared
+ * catalog so the MCP server registers a callable handler for it (the agent loop
+ * drives itself through it), but it is a *mechanism* tool rather than a
+ * model-facing one: offering a blocking wait to the model would let a turn pin
+ * the loop. The agent's MCP client lists it on the server for calling and
+ * filters it out of the tool specs advertised to the model. Naming it here
+ * keeps the server-registered name and the client-filtered name in lockstep
+ * with the catalog entry above.
+ */
+export const matrixWaitForActivityTool = "matrix_wait_for_activity";
+
+/**
+ * How long the agent's continuous loop blocks on the room long-poll before
+ * giving up and resuming. A bounded value keeps a single wait from pinning the
+ * agent forever and bounds how stale the loop's view of the room can get if a
+ * wake-up is lost. Stays well under typical homeserver /sync limits (which
+ * themselves cap a long-poll at ~30s), so the timeout we ask for is one the
+ * homeserver will actually honour rather than close early.
+ */
+export const matrixWaitForActivityTimeoutMs = 30_000;
+
+export const matrixWaitForActivitySchema = z.object({
+  timeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(matrixWaitForActivityTimeoutMs)
+    .default(matrixWaitForActivityTimeoutMs)
+    .describe("Max milliseconds to block waiting for new room activity before returning"),
+  /**
+   * The resume token (`next_batch`) from a previous wait, so the next wait
+   * starts where the last left off instead of re-reading everything since the
+   * agent joined. Omitted on the first wait of a run.
+   */
+  since: z.string().optional().describe("Resume token from a previous wait (its nextBatch)"),
+});
+
+/**
  * One tool in the Matrix MCP catalog: the name, the description an agent sees,
  * and the zod schema for its parameters. The name+description+parameters triple
  * is the unit the server registers and the client advertises, so it lives here,
@@ -80,6 +118,12 @@ export const matrixToolCatalog: MatrixToolDefinition[] = [
     description:
       "React to a message with an emoji, e.g. as a lightweight agree/disagree signal.",
     schema: matrixAddReactionSchema,
+  },
+  {
+    name: matrixWaitForActivityTool,
+    description:
+      "Block until new messages or reactions arrive in the scenario's Matrix room, or until the timeout elapses. Returns whether anything new arrived and a token (nextBatch) to resume waiting from next time. Intended for the agent runtime's event-driven loop, not for the model.",
+    schema: matrixWaitForActivitySchema,
   },
 ];
 

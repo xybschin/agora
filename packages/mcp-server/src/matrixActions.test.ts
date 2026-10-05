@@ -308,3 +308,89 @@ describe("identity is resolved from the access token, not a client header (agora
     expect(self.senderDisplayName).toBe("@agora-alex:localhost");
   });
 });
+
+describe("matrixActions waitForActivity long-poll", () => {
+  // A /sync responder that returns the given joined-room timeline events and a
+  // next_batch token, defaulting to no activity in the room.
+  function syncResponder(events: unknown[], nextBatch: string) {
+    return (call: FetchCall): Response => {
+      if (call.url.includes("/sync")) {
+        return new Response(
+          JSON.stringify({
+            next_batch: nextBatch,
+            rooms: events.length > 0 ? { join: { "!room:localhost": { timeline: { events } } } } : {},
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 200 });
+    };
+  }
+
+  test("returns hasActivity true and the next_batch token when activity is present", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { waitForActivity } = await import("./matrixActions.js");
+
+    const calls = recordFetch(syncResponder([{ event_id: "$e1" }], "s2"));
+    const result = await waitForActivity(
+      getMatrixClient("syt_alex"),
+      "!room:localhost",
+      30_000,
+      "s1",
+    );
+
+    expect(result.hasActivity).toBe(true);
+    expect(result.nextBatch).toBe("s2");
+
+    // The long-poll request carries the timeout and resume token and a
+    // message/reaction filter -- and, crucially, NO room id. The room is bound
+    // to the server by MATRIX_ROOM_ID and never travels over the wire as a
+    // model-supplied argument.
+    const sync = calls.find((c) => c.url.includes("/sync"))!;
+    expect(sync.method).toBe("GET");
+    expect(sync.url).toContain("timeout=30000");
+    expect(sync.url).toContain("since=s1");
+    expect(sync.url).toContain("m.room.message");
+    expect(sync.url).toContain("m.reaction");
+    expect(sync.url).not.toContain("!room:localhost");
+  });
+
+  test("a timed-out wait with nothing new is a normal success, not an error", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { waitForActivity } = await import("./matrixActions.js");
+
+    // No joined room / no timeline events: nothing new arrived by the timeout.
+    const calls = recordFetch(syncResponder([], "s5"));
+    const result = await waitForActivity(
+      getMatrixClient("syt_alex"),
+      "!room:localhost",
+      30_000,
+      "s4",
+    );
+
+    // Still a peer of the happy path: hasActivity false, but the token advances
+    // so the next wait resumes from here rather than re-reading everything.
+    expect(result.hasActivity).toBe(false);
+    expect(result.nextBatch).toBe("s5");
+    expect(calls.find((c) => c.url.includes("/sync"))?.authorization).toBe("Bearer syt_alex");
+  });
+
+  test("never sends a room id across any wait, even without a since token", async () => {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { waitForActivity } = await import("./matrixActions.js");
+
+    // First wait of a run: no `since` resume token at all.
+    const calls = recordFetch(syncResponder([{ event_id: "$e2" }], "s2"));
+    const result = await waitForActivity(getMatrixClient("syt_alex"), "!room:localhost", 30_000);
+
+    expect(result.hasActivity).toBe(true);
+    const sync = calls.find((c) => c.url.includes("/sync"))!;
+    expect(sync.url).not.toContain("since=");
+    expect(sync.url).not.toContain("!room:localhost");
+    expect(sync.url).not.toContain("roomId");
+  });
+});
+
