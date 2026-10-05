@@ -207,7 +207,7 @@ const scenario = {
   name: "remote-work-policy",
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
-  ticks: 2,
+  maxRuntimeMs: 120000,
   memory: { windowSize: 20 },
   budget: {},
   agents: [agent("alex"), agent("bri")],
@@ -221,8 +221,7 @@ describe("parseScenarioConfig", () => {
     const parsed = parseScenarioConfig(scenario);
     expect(parsed).toEqual({
       ...scenario,
-      tickIntervalMs: 60_000,
-      maxToolStepsPerTick: 6,
+      maxToolStepsPerTurn: 6,
     });
     expect("observers" in parsed).toBe(false);
   });

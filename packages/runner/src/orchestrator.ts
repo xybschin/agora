@@ -1,15 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import type { ScenarioConfig } from "@agora/shared";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { ScenarioConfig, SequencedEvent, UsageEvent } from "@agora/shared";
 import type { BudgetTracker } from "./budget.js";
-
-interface TickResponse {
-  ok: boolean;
-  agentId: string;
-  tick: number;
-  stance?: number;
-  usage?: { promptTokens: number; completionTokens: number };
-  error?: string;
-}
 
 export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise<void> {
   for (const url of urls) {
@@ -30,81 +23,107 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
 }
 
 /**
- * Drives fixed-tick, round-based scheduling (Q5): every tickIntervalMs, POST
- * /tick to every agent in parallel (Q22) and wait for all to finish before
- * advancing, so ticks stay a well-defined timestep for the stance metric.
+ * Supervises a Run to its terminal outcome by monitoring the transcript for four
+ * conditions:
+ * 1. Moderator ending the Run (moderator_ended_run event) → successful completion
+ * 2. Wall-clock runtime limit exceeded → aborted (safety backstop)
+ * 3. Token budget exceeded → aborted (unchanged from before, now tracked via transcript)
+ * 4. Operator cancellation (SIGINT/SIGTERM) → aborted (unchanged)
  *
- * The orchestrator no longer writes any per-tick event boundary: per-agent
- * liveness is recorded by the agent loops themselves, as
- * `agent_turn_started`/`agent_turn_ended` pairs (each bracketing one agent's
- * turn) plus `agent_heartbeat`. `ticksRun` remains this module's return
- * value — runner-level bookkeeping that the caller logs and folds into the
- * Run outcome — but it is no longer stamped onto any event. Event ordering is
- * carried by the per-event `seq` the event-log writer assigns at write time:
- * monotonic per runId within a single writing process. It is deliberately not
- * a perfect global order across the runner and every concurrently-writing
- * container (see the always-active ADR) — it is enough to reconstruct the
- * order any one writer produced, which is what the removed global tick
- * bracket previously gave per tick.
+ * Agents run their own continuous loops independently, driven by Matrix activity.
+ * The runner's job is to detect when the Run reaches one of these four terminal
+ * conditions and return control to the caller to write the terminal event and tear down.
  *
- * `stopWhen` is polled at the top of each tick, not inside one: a cancel is
- * delivered asynchronously while a tick's requests are in flight, and ending
- * between ticks keeps the orchestrator from launching a fresh round after the
- * terminal event has been recorded.
+ * `stopWhen` is checked periodically while supervising (not just at intervals):
+ * a cancel is recorded as `cancelled` when detected, and control returns to the caller
+ * so the signal handler can write the terminal event.
  */
-export async function runTicks(params: {
+export async function superviseRunToTerminal(params: {
+  runId: string;
   scenario: ScenarioConfig;
-  agentPorts: Record<string, number>;
+  logDir: string;
   budget: BudgetTracker;
   stopWhen?: () => boolean;
-}): Promise<{ aborted: boolean; reason?: string; ticksRun: number }> {
-  const { scenario, agentPorts, budget, stopWhen } = params;
-  const agentIds = Object.keys(agentPorts);
+}): Promise<
+  | { outcome: "moderator_ended"; rationale: string; messageId: string }
+  | { outcome: "wall_clock_exceeded" }
+  | { outcome: "budget_exceeded" }
+  | { outcome: "cancelled" }
+> {
+  const { runId, scenario, logDir, budget, stopWhen } = params;
+  const runtimeStartTime = Date.now();
+  const transcriptPath = join(logDir, runId, "events.jsonl");
 
-  for (let tick = 1; tick <= scenario.ticks; tick++) {
+  // Track which usage events we've already recorded in the budget, to avoid
+  // double-counting when we re-read the transcript multiple times.
+  const recordedUsageSeq = new Set<number>();
+
+  const pollIntervalMs = 500; // Poll transcript every 500ms
+
+  for (;;) {
+    // Check for cancellation signal at the top of each poll cycle.
     if (stopWhen?.()) {
-      // The signal handler owns writing the terminal event; returning aborted
-      // here stops the loop and makes the runner's own branch agree, while
-      // recordTerminal declines to write a second one.
-      return { aborted: true, reason: "cancelled", ticksRun: tick - 1 };
+      return { outcome: "cancelled" };
     }
 
-    console.log(`--- tick ${tick}/${scenario.ticks} ---`);
+    // Check wall-clock runtime limit.
+    const elapsedMs = Date.now() - runtimeStartTime;
+    if (elapsedMs > scenario.maxRuntimeMs) {
+      return { outcome: "wall_clock_exceeded" };
+    }
 
-    const results = await Promise.allSettled(
-      agentIds.map(async (agentId) => {
-        const port = agentPorts[agentId];
-        const res = await fetch(`http://localhost:${port}/tick`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          // totalTicks lets the agent ground "tick N of M" in its per-tick
-          // message; the runner owns the Scenario's tick count.
-          body: JSON.stringify({ tick, totalTicks: scenario.ticks }),
-        });
-        return (await res.json()) as TickResponse;
-      }),
-    );
+    // Read the transcript and check for terminal events.
+    try {
+      const events = readTranscriptEvents(transcriptPath);
 
-    for (const result of results) {
-      if (result.status === "fulfilled") {
-        if (result.value.usage) budget.record(result.value.usage);
-        if (!result.value.ok) console.error("agent tick error:", result.value);
-      } else {
-        console.error("tick request failed:", result.reason);
+      // Check for moderator_ended_run (successful completion).
+      for (const event of events) {
+        if (event.type === "moderator_ended_run") {
+          return {
+            outcome: "moderator_ended",
+            rationale: event.rationale,
+            messageId: event.messageId,
+          };
+        }
       }
+
+      // Record any new usage events we haven't seen before.
+      for (const event of events) {
+        if (event.type === "usage" && !recordedUsageSeq.has(event.seq)) {
+          recordedUsageSeq.add(event.seq);
+          budget.record({
+            promptTokens: event.promptTokens,
+            completionTokens: event.completionTokens,
+          });
+        }
+      }
+
+      // Check for budget exceeded.
+      if (budget.isExceeded()) {
+        return { outcome: "budget_exceeded" };
+      }
+    } catch (err) {
+      // Transcript file may not exist yet or may not be readable; keep polling.
+      console.error("error reading transcript:", err);
     }
 
-    // The budget check is the only post-tick bookkeeping left here: a Run that
-    // stops on budget is a Run that finished this tick, and the terminal event
-    // (written by the caller via recordOutcome) records the outcome.
-    if (budget.isExceeded()) {
-      return { aborted: true, reason: "budget exceeded", ticksRun: tick };
-    }
-
-    if (tick < scenario.ticks) {
-      await sleep(scenario.tickIntervalMs);
-    }
+    // Sleep before the next poll.
+    await sleep(pollIntervalMs);
   }
+}
 
-  return { aborted: false, ticksRun: scenario.ticks };
+/**
+ * Read all events from a transcript file, parsing each line as JSON.
+ * Returns an empty array if the file doesn't exist.
+ */
+function readTranscriptEvents(transcriptPath: string): SequencedEvent[] {
+  try {
+    const content = readFileSync(transcriptPath, "utf8");
+    return content
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as SequencedEvent);
+  } catch {
+    return [];
+  }
 }

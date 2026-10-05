@@ -198,18 +198,14 @@ describe("run lifecycle outcomes", () => {
     );
   });
 
-  test("a ticks-aborted outcome records run_aborted with the reported reason", async () => {
-    // `ticksRun` is runner-level bookkeeping (drives the outcome decision and
-    // the console), but is no longer stamped onto the terminal event.
+  test("a budget-exceeded outcome records run_aborted with budget reason", async () => {
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
     await lifecycle.begin("r1");
 
     const claimed = await lifecycle.recordOutcome("r1", {
-      type: "ticksAborted",
-      ticksRun: 3,
-      reason: "budget exceeded",
+      type: "budgetExceeded",
     });
 
     expect(claimed).toBe(true);
@@ -218,30 +214,74 @@ describe("run lifecycle outcomes", () => {
     expect(abort).toEqual(
       expect.objectContaining({
         type: "run_aborted",
-        reason: "budget exceeded",
+        reason: "token budget exceeded",
       }),
     );
-    expect(abort).not.toHaveProperty("tick");
-    expect(abort).not.toHaveProperty("ticksRun");
   });
 
-  test("a completed outcome records run_completed", async () => {
+  test("a wall-clock-exceeded outcome records run_aborted with wall-clock reason", async () => {
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
     await lifecycle.begin("r1");
 
     const claimed = await lifecycle.recordOutcome("r1", {
-      type: "completed",
-      ticksRun: 5,
+      type: "wallClockExceeded",
     });
 
     expect(claimed).toBe(true);
     const events = readEvents(logDir, "r1");
-    const completed = events.find((e) => e.type === "run_completed");
-    expect(completed).toEqual(
+    const abort = events.find((e) => e.type === "run_aborted");
+    expect(abort).toEqual(
       expect.objectContaining({
-        type: "run_completed",
+        type: "run_aborted",
+        reason: "wall-clock runtime limit exceeded",
+      }),
+    );
+  });
+
+  test("a moderator-ended outcome records moderator_ended_run with rationale", async () => {
+    const logDir = freshLogDir();
+    const { composeDown } = stubComposeDown();
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+    await lifecycle.begin("r1");
+
+    const claimed = await lifecycle.recordOutcome("r1", {
+      type: "moderatorEnded",
+      rationale: "Discussion concluded",
+      messageId: "$event_123",
+    });
+
+    expect(claimed).toBe(true);
+    const events = readEvents(logDir, "r1");
+    const ended = events.find((e) => e.type === "moderator_ended_run");
+    expect(ended).toEqual(
+      expect.objectContaining({
+        type: "moderator_ended_run",
+        rationale: "Discussion concluded",
+        messageId: "$event_123",
+      }),
+    );
+  });
+
+  test("a permissions-refused outcome records run_aborted with reason", async () => {
+    const logDir = freshLogDir();
+    const { composeDown } = stubComposeDown();
+    const lifecycle = createRunLifecycle({ logDir, composeDown });
+    await lifecycle.begin("r1");
+
+    const claimed = await lifecycle.recordOutcome("r1", {
+      type: "permissionsRefused",
+      reason: "setup account permissions insufficient",
+    });
+
+    expect(claimed).toBe(true);
+    const events = readEvents(logDir, "r1");
+    const abort = events.find((e) => e.type === "run_aborted");
+    expect(abort).toEqual(
+      expect.objectContaining({
+        type: "run_aborted",
+        reason: "setup account permissions insufficient",
       }),
     );
   });

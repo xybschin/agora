@@ -13,9 +13,8 @@ seedMessage: >-
   ride and roughly $450 from the rest of us. I'm not able to organize the
   driving and the money this time, so it's in your hands to work out before
   Friday. Please keep this in the family. — Karen
-ticks: 20
-tickIntervalMs: 10000
-maxToolStepsPerTick: 10
+maxRuntimeMs: 200000
+maxToolStepsPerTurn: 10
 memory:
   windowSize: 30
 budget:

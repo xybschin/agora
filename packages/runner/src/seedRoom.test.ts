@@ -52,9 +52,8 @@ const scenario: ScenarioConfig = {
   name: "remote-work-policy",
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
-  ticks: 2,
-  tickIntervalMs: 60_000,
-  maxToolStepsPerTick: 6,
+  maxRuntimeMs: 120000,
+  maxToolStepsPerTurn: 6,
   memory: { windowSize: 20 },
   budget: {},
   agents: ["alex", "bri"].map((id) => ({

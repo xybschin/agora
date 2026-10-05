@@ -1,9 +1,10 @@
-import { appendEvent, type RunAbortedEvent, type RunCompletedEvent } from "@agora/shared";
+import { appendEvent, type RunAbortedEvent, type RunCompletedEvent, type RunCompletedByModeratorEvent } from "@agora/shared";
 
 export type RunOutcome =
   | { type: "permissionsRefused"; reason: string }
-  | { type: "ticksAborted"; ticksRun: number; reason: string }
-  | { type: "completed"; ticksRun: number };
+  | { type: "moderatorEnded"; rationale: string; messageId: string }
+  | { type: "wallClockExceeded" }
+  | { type: "budgetExceeded" };
 
 export interface RunLifecycleDeps {
   logDir: string;
@@ -76,7 +77,7 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
    */
   async function recordTerminal(
     runId: string,
-    event: RunAbortedEvent | RunCompletedEvent,
+    event: RunAbortedEvent | RunCompletedEvent | RunCompletedByModeratorEvent,
   ): Promise<boolean> {
     if (active?.runId !== runId) return false;
     active = null;
@@ -104,9 +105,9 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
   }
 
   /**
-   * Records a Run's terminal outcome. The sole place constructing run_aborted
-   * and run_completed event literals, so the runId format and event construction
-   * have one place that controls them. Returns false when the run is no longer
+   * Records a Run's terminal outcome. The sole place constructing run_aborted,
+   * run_completed, and moderator_ended_run event literals, so event construction
+   * has one place that controls it. Returns false when the run is no longer
    * active (already closed out by a concurrent signal or a previous call).
    */
   async function recordOutcome(runId: string, outcome: RunOutcome): Promise<boolean> {
@@ -118,17 +119,26 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
           reason: outcome.reason,
           timestamp: new Date().toISOString(),
         });
-      case "ticksAborted":
+      case "moderatorEnded":
+        return recordTerminal(runId, {
+          type: "moderator_ended_run",
+          runId,
+          rationale: outcome.rationale,
+          messageId: outcome.messageId,
+          timestamp: new Date().toISOString(),
+        });
+      case "wallClockExceeded":
         return recordTerminal(runId, {
           type: "run_aborted",
           runId,
-          reason: outcome.reason,
+          reason: "wall-clock runtime limit exceeded",
           timestamp: new Date().toISOString(),
         });
-      case "completed":
+      case "budgetExceeded":
         return recordTerminal(runId, {
-          type: "run_completed",
+          type: "run_aborted",
           runId,
+          reason: "token budget exceeded",
           timestamp: new Date().toISOString(),
         });
     }

@@ -59,12 +59,12 @@ export interface SamplingParams {
 export interface ScenarioConfig {
   name: string;
   topic: string;
-  /** Posted by the runner as a system/moderator message before tick 1. */
+  /** Posted by the runner as a system/moderator message before agents are admitted. */
   seedMessage: string;
-  ticks: number;
-  tickIntervalMs: number;
-  /** Hard cap on tool-calling steps within a single agent's tick, to bound runaway loops. */
-  maxToolStepsPerTick: number;
+  /** Wall-clock runtime limit in milliseconds. The Run ends when this limit is exceeded (wall-clock backstop). */
+  maxRuntimeMs: number;
+  /** Hard cap on tool-calling steps within a single agent's turn, to bound runaway loops. */
+  maxToolStepsPerTurn: number;
   memory: MemoryConfig;
   budget: BudgetConfig;
   agents: AgentDefinition[];

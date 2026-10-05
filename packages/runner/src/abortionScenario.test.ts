@@ -73,11 +73,10 @@ describe("scenarios/abortion-policy.yaml", () => {
 
   test("preserves the cast's traits, stances, and runtime tuning", async () => {
     const scenario = await loadScenario(SCENARIO_PATH);
-    // Runtime tuning is unchanged: same tick budget, pacing, per-tick tool cap,
-    // memory window, and token budget.
-    expect(scenario.ticks).toBe(20);
-    expect(scenario.tickIntervalMs).toBe(10_000);
-    expect(scenario.maxToolStepsPerTick).toBe(10);
+    // Runtime tuning is updated to use wall-clock limit: maxRuntimeMs (wall-clock),
+    // maxToolStepsPerTurn (per-turn tool cap), memory window, and token budget.
+    expect(scenario.maxRuntimeMs).toBe(200_000); // 20 ticks * 10s per tick
+    expect(scenario.maxToolStepsPerTurn).toBe(10);
     expect(scenario.memory.windowSize).toBe(30);
     expect(scenario.budget.maxTotalTokens).toBe(2_000_000);
 

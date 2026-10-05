@@ -174,9 +174,8 @@ export const scenarioConfigSchema = z.object({
   name: z.string(),
   topic: z.string(),
   seedMessage: z.string(),
-  ticks: z.number().int().positive(),
-  tickIntervalMs: z.number().int().positive().default(60_000),
-  maxToolStepsPerTick: z.number().int().positive().default(6),
+  maxRuntimeMs: z.number().int().positive(),
+  maxToolStepsPerTurn: z.number().int().positive().default(6),
   memory: z.object({
     windowSize: z.number().int().positive().default(20),
   }),
@@ -198,10 +197,31 @@ export const scenarioConfigSchema = z.object({
   // Scenario that produced it). Optional: a Scenario that says nothing about
   // sampling must behave exactly as before and get the llm.ts defaults.
   samplingParams: samplingParamsSchema.optional(),
-});
+}).strict();
 
 export function parseScenarioConfig(raw: unknown) {
-  return scenarioConfigSchema.parse(raw);
+  try {
+    return scenarioConfigSchema.parse(raw);
+  } catch (err) {
+    // Provide a helpful error message if this is an old-format Scenario
+    // (with ticks/tickIntervalMs instead of maxRuntimeMs).
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      ("ticks" in raw || "tickIntervalMs" in raw)
+    ) {
+      throw new Error(
+        "This Scenario uses the old tick-based scheduling model (ticks, tickIntervalMs, maxToolStepsPerTick). " +
+          "The runner now uses continuous transcript supervision with a wall-clock limit. " +
+          "Update the Scenario YAML:\n" +
+          "  - Remove: ticks, tickIntervalMs\n" +
+          "  - Add: maxRuntimeMs (wall-clock runtime limit in milliseconds)\n" +
+          "  - Rename: maxToolStepsPerTick → maxToolStepsPerTurn\n" +
+          "For example: maxRuntimeMs: 1200000 (20 minutes).",
+      );
+    }
+    throw err;
+  }
 }
 
 const agentCredentialSchema = z.object({
