@@ -41,7 +41,6 @@ export async function recordRoomSetupAbort(
   await lifecycle.recordTerminal(runId, {
     type: "run_aborted",
     runId,
-    tick: 0,
     reason: err.message,
     timestamp: new Date().toISOString(),
   });

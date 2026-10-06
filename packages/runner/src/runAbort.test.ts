@@ -59,7 +59,6 @@ describe("recordRoomSetupAbort", () => {
       expect.objectContaining({
         type: "run_aborted",
         runId: "r1",
-        tick: 0,
         reason: 'could not invite Reader "@missing:localhost" into the run\'s room: POST .../invite -> HTTP 403: unknown user',
       }),
     );
