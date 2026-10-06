@@ -39,4 +39,4 @@ docker/postgres-data
 .beads-credential-key
 .beads.gate.lock
 flake.lock
-
+.claude/worktrees/*
