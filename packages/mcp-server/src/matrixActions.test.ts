@@ -1,5 +1,5 @@
 import { afterEach, describe, test, expect } from "bun:test";
-import { sendMessage } from "./matrixActions.js";
+import { sendMessage, stripQuote } from "./matrixActions.js";
 
 interface FetchCall {
   url: string;
@@ -468,6 +468,49 @@ describe("matrixActions sendMessage rich reply fallback", () => {
     expect(payload["m.relates_to"]["m.in_reply_to"].event_id).toBe("$original");
     expect(payload.body).toBe("and my reply");
     expect(payload.body).not.toContain("<no-fallback>");
+  });
+});
+
+describe("stripQuote", () => {
+  test("removes agent-generated quote prefix when replying", () => {
+    const input = `> <@agora-devon-elbs1:localhost>
+> original message
+
+My reply text`;
+    const result = stripQuote(input);
+    expect(result).toBe("My reply text");
+  });
+
+  test("handles quoted lines with various content", () => {
+    const input = `> <@user:host>
+> first line of original
+> second line of original
+
+And here's my response`;
+    const result = stripQuote(input);
+    expect(result).toBe("And here's my response");
+  });
+
+  test("handles quoted lines ending with blank line", () => {
+    const input = `> <@user:host>
+> original text
+>
+
+My response`;
+    const result = stripQuote(input);
+    expect(result).toBe("My response");
+  });
+
+  test("leaves non-quoted messages unchanged", () => {
+    const input = "Just a regular message with no quote";
+    const result = stripQuote(input);
+    expect(result).toBe(input);
+  });
+
+  test("handles malformed input gracefully", () => {
+    const input = "> <@incomplete";
+    const result = stripQuote(input);
+    expect(result).toBe(input); // No match, return original
   });
 });
 

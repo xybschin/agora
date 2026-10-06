@@ -166,6 +166,24 @@ function txnId(): string {
 }
 
 /**
+ * Strip leading quote syntax from a message, typically added by agents when
+ * replying. When a rich reply uses m.in_reply_to, the system provides its own
+ * fallback quote, so agent-generated quotes should be removed.
+ * Looks for the pattern: > <@...> followed by quoted lines, then a blank line.
+ */
+export function stripQuote(content: string): string {
+  // If content starts with a quote (> <@...) and has a blank line separator,
+  // strip everything before and including that separator.
+  if (content.startsWith("> <@")) {
+    const parts = content.split("\n\n");
+    if (parts.length > 1 && parts[0].startsWith("> <@")) {
+      return parts.slice(1).join("\n\n");
+    }
+  }
+  return content;
+}
+
+/**
  * Build the plain-text fallback for a rich reply, per the Matrix "Rich replies"
  * convention: the `body` starts with the original event quoted sender-prefixed.
  * Clients that cannot render the `m.in_reply_to` relation fall back to this
@@ -205,23 +223,30 @@ export async function sendMessage(
   content: string,
   replyToEventId?: string,
 ): Promise<{ id: string; createdAt: string }> {
-  const body: Record<string, unknown> = {
+  let body: Record<string, unknown> = {
     msgtype: "m.text",
     body: content,
   };
   if (replyToEventId) {
-    body["m.relates_to"] = {
-      // Rich reply -- includes a quoted fallback for clients that don't
-      // render the relation. The quote in `body` is required by the spec for
-      // plain-text fallback; some homeservers validate it loosely.
-      "m.in_reply_to": { event_id: replyToEventId },
+    // Strip any agent-generated quote prefix before building the rich reply.
+    // The system will add its own fallback quote per the spec.
+    const cleanContent = stripQuote(content);
+    body = {
+      msgtype: "m.text",
+      body: cleanContent,
+      "m.relates_to": {
+        // Rich reply -- includes a quoted fallback for clients that don't
+        // render the relation. The quote in `body` is required by the spec for
+        // plain-text fallback; some homeservers validate it loosely.
+        "m.in_reply_to": { event_id: replyToEventId },
+      },
     };
     // Wrap the body per the "Rich replies" quoting convention: quote the
     // original message (fetched by id) rather than a "<no-fallback>" stub, so
     // the reply reads correctly in any client that shows the fallback text.
     const fallback = await replyFallback(client, roomId, replyToEventId);
     if (fallback) {
-      body["body"] = `${fallback}\n\n${content}`;
+      body["body"] = `${fallback}\n\n${cleanContent}`;
     }
   }
   const sent = await csRequest<{ event_id: string }>(
