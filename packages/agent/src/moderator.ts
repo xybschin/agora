@@ -16,6 +16,17 @@ export interface ModeratorRuntimeConfig {
    */
   waitTimeoutMs?: number;
   /**
+   * How long the room may stay silent before the Moderator reassesses anyway,
+   * and how often it reassesses again while the silence lasts. Agents going
+   * quiet produces no room activity, so without this a silent room is never
+   * judged and the Run can only end on the wall-clock backstop. Measured in
+   * wall-clock time rather than counted in polls, because an empty long-poll
+   * can return well before its timeout. Defaults to 60s.
+   */
+  quietReassessAfterMs?: number;
+  /** Clock, injected so tests can drive quiet-room timing without sleeping. */
+  now?: () => number;
+  /**
    * Optional stop predicate, checked at the top of each loop iteration; when it
    * returns true the loop returns cleanly.
    */
@@ -98,7 +109,11 @@ If you classified ACTIVE but now see clear staleness, re-assess and post your cl
  * Builds the per-turn user message for the Moderator. Tells it how many new
  * messages have arrived since its last assessment.
  */
-function buildModeratorTurnMessage(newMessages: number): string {
+function buildModeratorTurnMessage(newMessages: number, quietForMs?: number): string {
+  if (quietForMs !== undefined) {
+    const seconds = Math.round(quietForMs / 1000);
+    return `The room has been quiet: no new messages for about ${seconds} seconds. Read the room and judge whether the discussion has trailed off (STALE) or is merely pausing (ACTIVE).`;
+  }
   if (newMessages <= 0) {
     return "No new messages since your last assessment. Check if the discussion is still active or has become stale.";
   }
@@ -136,9 +151,10 @@ export class ModeratorRuntime {
   /**
    * Runs the Moderator's assessment turn: reads the room, classifies the
    * discussion, and if STALE, posts a closing message and signals that the
-   * Run should end.
+   * Run should end. `quietForMs` is set when the turn was triggered by the room
+   * staying silent rather than by new activity.
    */
-  async runTurn(): Promise<ModeratorTurnResult> {
+  async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
     const { runId, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
 
     await appendEvent(logDir, runId, {
@@ -165,7 +181,7 @@ export class ModeratorRuntime {
       },
       {
         role: "user",
-        content: buildModeratorTurnMessage(newMessages),
+        content: buildModeratorTurnMessage(newMessages, opts?.quietForMs),
       },
     ];
 
@@ -297,14 +313,24 @@ export class ModeratorRuntime {
    *
    * Each iteration blocks on the room long-poll, wakes when activity arrives,
    * runs an assessment, and either continues waiting (ACTIVE) or ends the Run
-   * (STALE).
+   * (STALE). Each time the room has stayed silent for `quietReassessAfterMs`
+   * (since the last activity or the last quiet assessment), it assesses anyway
+   * and tells the model how long the room has been silent in total: silence is
+   * itself evidence the discussion may have trailed off.
    *
    * While waiting, emits an agent_heartbeat to provide liveness evidence.
    */
   async runLoop(): Promise<void> {
     const { runId, mcp } = this.config;
     const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
+    const quietReassessAfterMs = this.config.quietReassessAfterMs ?? 60_000;
+    const now = this.config.now ?? Date.now;
     let since: string | undefined;
+    // Silence is measured from the last room activity; reassessment during a
+    // silence is paced from the last assessment, so a pause judged ACTIVE is
+    // looked at again later with the full quiet time.
+    let lastActivityAt = now();
+    let lastAssessedAt = lastActivityAt;
 
     for (;;) {
       if (this.config.isStopped?.()) return;
@@ -320,12 +346,18 @@ export class ModeratorRuntime {
       try {
         const { hasActivity, nextBatch } = await mcp.waitForActivity({ timeoutMs, since });
         since = nextBatch;
+        let result: ModeratorTurnResult | undefined;
+        const polledAt = now();
         if (hasActivity) {
-          const result = await this.runTurn();
-          if (result.shouldEnd) {
-            // Moderator classified STALE and posted; end the Run.
-            return;
-          }
+          lastActivityAt = lastAssessedAt = polledAt;
+          result = await this.runTurn();
+        } else if (polledAt - lastAssessedAt >= quietReassessAfterMs) {
+          lastAssessedAt = polledAt;
+          result = await this.runTurn({ quietForMs: polledAt - lastActivityAt });
+        }
+        if (result?.shouldEnd) {
+          // Moderator classified STALE and posted; end the Run.
+          return;
         }
       } catch (err) {
         console.error("[moderator] waiting for room activity failed; will resume waiting:", err);
