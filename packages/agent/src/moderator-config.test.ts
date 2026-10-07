@@ -9,6 +9,7 @@ const MODERATOR_ENV: Record<string, string> = {
   MATRIX_SETUP_USER_ID: "@agora-setup:localhost",
   MATRIX_ACCESS_TOKEN: "syt_setup",
   MCP_URL: "http://mcp_server:3000/mcp",
+  ROSTER_JSON: JSON.stringify([{ agentId: "alex", matrixUserId: "@agora-alex:localhost" }]),
   LLM_BASE_URL: "https://example.com/v1",
   LLM_API_KEY: "sk-test",
   LLM_MODEL: "deepseek-v4-flash-sovereign",
