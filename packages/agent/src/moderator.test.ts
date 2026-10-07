@@ -1,5 +1,5 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
@@ -968,7 +968,7 @@ describe("ModeratorRuntime", () => {
 
   describe("turn message", () => {
     test("the first Assessment says the discussion has just started and counts the room", () => {
-      const msg = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 1, newMessages: 0 });
+      const msg = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 1, newMessages: 0, midTurn: [] });
       expect(msg).toContain("first assessment");
       expect(msg).toContain("just started");
       expect(msg).toContain("The room holds 1 message so far.");
@@ -976,26 +976,26 @@ describe("ModeratorRuntime", () => {
     });
 
     test("the first Assessment pluralises the count and copes with an uncounted room", () => {
-      expect(buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 3, newMessages: 0 })).toContain(
+      expect(buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 3, newMessages: 0, midTurn: [] })).toContain(
         "The room holds 3 messages so far.",
       );
-      const uncounted = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: null, newMessages: 0 });
+      const uncounted = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: null, newMessages: 0, midTurn: [] });
       expect(uncounted).toContain("first assessment");
       expect(uncounted).not.toMatch(/no new messages/i);
     });
 
     test("a later Assessment reports the new messages since the previous one", () => {
-      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 2 })).toContain(
+      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 2, midTurn: [] })).toContain(
         "2 new messages since your last assessment.",
       );
-      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 1 })).toContain(
+      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 1, midTurn: [] })).toContain(
         "1 new message since your last assessment.",
       );
     });
 
     test("a later Assessment woken by activity is never told there are no new messages", () => {
       // The count can stay put when the room cannot be counted or is past the read limit.
-      const msg = buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 100, newMessages: 0 });
+      const msg = buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 100, newMessages: 0, midTurn: [] });
       expect(msg).not.toMatch(/no new messages/i);
       expect(msg).toContain("new activity");
     });
@@ -1006,6 +1006,7 @@ describe("ModeratorRuntime", () => {
         messageCount: 4,
         newMessages: 0,
         quietForMs: 90_000,
+        midTurn: [],
       });
       expect(msg).toMatch(/quiet.*90 seconds/);
     });
@@ -1040,6 +1041,83 @@ describe("ModeratorRuntime", () => {
       expect(turnMessages[0]).toContain("first assessment");
       expect(turnMessages[0]).toContain("The room holds 1 message so far.");
       expect(turnMessages[2]).toContain("2 new messages since your last assessment.");
+    });
+  });
+
+  describe("agents mid-turn", () => {
+    const roster = [
+      { agentId: "alex", matrixUserId: "@agora-alex:example.com" },
+      { agentId: "bri", matrixUserId: "@agora-bri:example.com" },
+      { agentId: "cam", matrixUserId: "@agora-cam:example.com" },
+    ];
+
+    test("the turn message names the agents mid-turn and for how long", () => {
+      const msg = buildModeratorTurnMessage({
+        isFirstAssessment: false,
+        messageCount: 5,
+        newMessages: 2,
+        midTurn: [{ agentId: "alex", forMs: 12_000 }, { agentId: "bri" }],
+      });
+      expect(msg).toContain("2 new messages since your last assessment.");
+      expect(msg).toContain("2 agents are mid-turn");
+      expect(msg).toContain("alex (for 12s), bri.");
+    });
+
+    test("the turn message says when nobody is mid-turn, or that it is unknown", () => {
+      const base = { isFirstAssessment: true, messageCount: 1, newMessages: 0 };
+      expect(buildModeratorTurnMessage({ ...base, midTurn: [] })).toContain("No agent is mid-turn right now.");
+      expect(buildModeratorTurnMessage({ ...base, midTurn: null })).toContain("could not be determined");
+    });
+
+    test("a quiet-room reassessment while agents are mid-turn says the silence may be replies being composed", () => {
+      const msg = buildModeratorTurnMessage({
+        isFirstAssessment: false,
+        messageCount: 4,
+        newMessages: 0,
+        quietForMs: 90_000,
+        midTurn: [{ agentId: "alex", forMs: 20_000 }],
+      });
+      expect(msg).toMatch(/quiet.*90 seconds/);
+      expect(msg).toContain("1 agent is mid-turn");
+      expect(msg).toContain("alex (for 20s)");
+      expect(msg).toMatch(/still being composed/);
+    });
+
+    test("runTurn tells the Assessment which roster agents have a turn open in the event log", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      const at = new Date().toISOString();
+      const lines = [
+        { type: "agent_turn_started", agentId: "alex", turn: 1 }, // open
+        { type: "agent_turn_started", agentId: "bri", turn: 1 },
+        { type: "agent_turn_ended", agentId: "bri", turn: 1 }, // ended
+        { type: "agent_turn_started", agentId: "cam", turn: 1 },
+        { type: "agent_turn_failed", agentId: "cam", turn: 1, error: "LLM out of capacity" }, // failed
+        { type: "agent_turn_started", agentId: "stranger", turn: 1 }, // not on the roster
+      ].map((event) => JSON.stringify({ runId: RUN_ID, seq: 1, timestamp: at, ...event }));
+      await mkdir(path.join(logDir, RUN_ID), { recursive: true });
+      await writeFile(path.join(logDir, RUN_ID, "events.jsonl"), lines.join("\n") + "\n");
+
+      llmCalls = [];
+      script = [assistant([classifyCall("active", "Replies are on their way")]), assistant()];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        topic: TOPIC,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        roster,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+      });
+      await runtime.runTurn({ quietForMs: 60_000 });
+
+      const turnMessage = String(llmCalls[0]!.find((m) => m.role === "user")?.content ?? "");
+      expect(turnMessage).toContain("1 agent is mid-turn");
+      expect(turnMessage).toMatch(/alex \(for \d+s\)/);
+      expect(turnMessage).not.toContain("bri");
+      expect(turnMessage).not.toContain("cam");
+      expect(turnMessage).not.toContain("stranger");
+      expect(turnMessage).toMatch(/still being composed/);
     });
   });
 

@@ -2,6 +2,7 @@ import { appendEvent, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
+import { readTurnsInFlight } from "./turnsInFlight.js";
 import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from "./waitBackoff.js";
 
 export interface ModeratorRuntimeConfig {
@@ -146,14 +147,42 @@ If you classified ACTIVE but now see clear staleness, re-assess and post your cl
 `;
 }
 
+/** A roster agent with a turn in flight, as told to the Moderator. */
+export interface AgentMidTurn {
+  agentId: string;
+  /** How long the turn has been open; undefined when its start time is unknown. */
+  forMs?: number;
+}
+
 /**
  * Builds the per-turn user message for the Moderator. The first Assessment is
  * told the discussion has just begun and how many messages the room holds;
  * later Assessments woken by room activity are told how many messages arrived
  * since the previous one; quiet-room reassessments are told how long the room
  * has been silent. `messageCount` is null when the room could not be counted.
+ *
+ * Every Assessment is also told which agents have a turn in flight, so a room
+ * that is quiet because everyone is composing a reply is not mistaken for one
+ * everyone has left. `midTurn` is null when the event log could not be read.
  */
 export function buildModeratorTurnMessage(params: {
+  isFirstAssessment: boolean;
+  messageCount: number | null;
+  newMessages: number;
+  quietForMs?: number;
+  midTurn: AgentMidTurn[] | null;
+}): string {
+  const { quietForMs, midTurn } = params;
+  const inFlight = describeTurnsInFlight(midTurn);
+  if (quietForMs !== undefined && midTurn !== null && midTurn.length > 0) {
+    const seconds = Math.round(quietForMs / 1000);
+    return `The room has been quiet: no new messages for about ${seconds} seconds. But ${inFlight} The silence may only mean replies are still being composed. Read the room and judge whether the discussion has trailed off (STALE) or is merely pausing (ACTIVE).`;
+  }
+  return `${buildRoomNews(params)} ${inFlight}`;
+}
+
+/** The part of the turn message about what the room itself has done. */
+function buildRoomNews(params: {
   isFirstAssessment: boolean;
   messageCount: number | null;
   newMessages: number;
@@ -177,6 +206,17 @@ export function buildModeratorTurnMessage(params: {
     return "There has been new activity in the room since your last assessment. Read and reassess.";
   }
   return `${newMessages} new message${newMessages === 1 ? "" : "s"} since your last assessment. Read and reassess.`;
+}
+
+/** One sentence naming the agents mid-turn and for how long. */
+function describeTurnsInFlight(midTurn: AgentMidTurn[] | null): string {
+  if (midTurn === null) return "Which agents are mid-turn right now could not be determined.";
+  if (midTurn.length === 0) return "No agent is mid-turn right now.";
+  const names = midTurn.map(({ agentId, forMs }) =>
+    forMs === undefined ? agentId : `${agentId} (for ${Math.round(forMs / 1000)}s)`,
+  );
+  const count = midTurn.length === 1 ? "1 agent is" : `${midTurn.length} agents are`;
+  return `${count} mid-turn right now, reading the room or composing a reply: ${names.join(", ")}.`;
 }
 
 /** Upper bound on a logged tool result summary, so the event log never carries a room dump. */
@@ -278,6 +318,25 @@ export class ModeratorRuntime {
     return roster.filter((agent) => !this.speakers.has(agent.matrixUserId));
   }
 
+  /**
+   * The roster agents with a turn in flight, read off the Run's event log (the
+   * only place agent turns are visible to the Moderator). Without a roster,
+   * every agent in the log counts. Null when the log could not be read.
+   */
+  private async rosterAgentsMidTurn(): Promise<AgentMidTurn[] | null> {
+    const turns = await readTurnsInFlight(this.config.logDir, this.config.runId);
+    if (turns === null) return null;
+    const roster = this.config.roster;
+    // Log timestamps are wall-clock, so the age is too, not the injectable clock.
+    const wallNow = Date.now();
+    return turns
+      .filter(({ agentId }) => !roster || roster.some((agent) => agent.agentId === agentId))
+      .map(({ agentId, startedAt }) => {
+        const started = Date.parse(startedAt);
+        return Number.isNaN(started) ? { agentId } : { agentId, forMs: Math.max(0, wallNow - started) };
+      });
+  }
+
   constructor(private readonly config: ModeratorRuntimeConfig) {}
 
   /** Records one of the model's tool calls in the event log. */
@@ -318,6 +377,7 @@ export class ModeratorRuntime {
 
     const currentCount = await this.countRoomMessages();
     const newMessages = this.lastTurnStartCount === 0 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
+    const midTurn = await this.rosterAgentsMidTurn();
 
     const messages: ChatMessage[] = [
       {
@@ -335,6 +395,7 @@ export class ModeratorRuntime {
           messageCount: currentCount,
           newMessages,
           quietForMs: opts?.quietForMs,
+          midTurn,
         }),
       },
     ];
