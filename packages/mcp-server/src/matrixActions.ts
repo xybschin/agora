@@ -173,10 +173,11 @@ function txnId(): string {
  */
 export function stripQuote(content: string): string {
   // If content starts with a quote (> <@...) and has a blank line separator,
-  // strip everything before and including that separator.
+  // strip everything before and including that separator. The first part is a
+  // prefix of content, so it starts with the quote marker too.
   if (content.startsWith("> <@")) {
     const parts = content.split("\n\n");
-    if (parts.length > 1 && parts[0].startsWith("> <@")) {
+    if (parts.length > 1) {
       return parts.slice(1).join("\n\n");
     }
   }
