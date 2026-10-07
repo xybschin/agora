@@ -44,7 +44,8 @@ export interface RunAbortedEvent extends BaseEvent {
  * at 1, independent per agent and per Run. Together with `agent_heartbeat`
  * these replace the old global `tick_start`/`tick_end` bracket as the per-agent
  * liveness evidence: with no shared tick to group events by, each agent's
- * activity is delimited by its own turn pair (see the always-active ADR).
+ * activity is delimited by its own turn pair (see the always-active ADR). A
+ * turn that throws closes with `agent_turn_failed` instead of `agent_turn_ended`.
  */
 export interface AgentTurnStartedEvent extends BaseEvent {
   type: "agent_turn_started";
@@ -56,6 +57,22 @@ export interface AgentTurnEndedEvent extends BaseEvent {
   type: "agent_turn_ended";
   agentId: string;
   turn: number;
+}
+
+/**
+ * Closes a turn that threw instead of completing (an LLM call that outlasted
+ * its retries, a homeserver rejection of a send). Written by the loop that ran
+ * the turn, so an `agent_turn_started` is normally closed by exactly one of
+ * `agent_turn_ended` or `agent_turn_failed`; one left unclosed now means the
+ * process itself died mid-turn. `error` is the thrown error's message, so the
+ * transcript alone says why an agent went quiet. `agentId` admits the
+ * Moderator ("moderator"), whose `turn` counts its Assessments.
+ */
+export interface AgentTurnFailedEvent extends BaseEvent {
+  type: "agent_turn_failed";
+  agentId: string;
+  turn: number;
+  error: string;
 }
 
 /**
@@ -99,6 +116,7 @@ export type AgoraEvent =
   | RunAbortedEvent
   | AgentTurnStartedEvent
   | AgentTurnEndedEvent
+  | AgentTurnFailedEvent
   | AgentHeartbeatEvent
   | ModeratorClassificationEvent
   | RunCompletedByModeratorEvent;

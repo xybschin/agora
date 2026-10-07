@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -12,15 +12,18 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 // failure paths are both reachable without a real homeserver.
 //
 // The mock replays a scripted list of assistant messages, one per
-// chatCompletion call; a message with no tool_calls ends the tick.
+// chatCompletion call; a message with no tool_calls ends the tick. A scripted
+// Error is thrown instead, standing in for a provider failure that outlasted
+// chatCompletion's own retries.
 type ScriptedMessage = ChatMessage & { tool_calls?: ToolCall[] };
 
-let script: Array<ScriptedMessage> = [];
+let script: Array<ScriptedMessage | Error> = [];
 
 mock.module("./llm.js", () => ({
   chatCompletion: async () => {
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
+    if (next instanceof Error) throw next;
     return { message: next, usage: { promptTokens: 5, completionTokens: 5 } };
   },
 }));
@@ -616,7 +619,7 @@ describe("AgentRuntime turn bracketing events", () => {
   // Drives real runTurn calls writing to a throwaway logDir, then reads back
   // the agent_turn_started/agent_turn_ended events so the test asserts the
   // per-agent turn liveness evidence, not a stub.
-  async function turnEventsAfter(script_: Array<ScriptedMessage>, runTurns = 1) {
+  async function turnEventsAfter(script_: Array<ScriptedMessage | Error>, runTurns = 1) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-turn-bracket-"));
     mcp.callTool = async (name: string) =>
       name === "matrix_send_message" ? OK_SEND() : "{}";
@@ -697,7 +700,20 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
     });
     await runtime.runLoop();
     const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
-    const events = raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { type: string; turn?: number; state?: string });
+    const events = raw
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            type: string;
+            agentId?: string;
+            turn?: number;
+            state?: string;
+            error?: string;
+          },
+      );
     return { events, waits, runtime };
   }
 
@@ -766,5 +782,54 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
     // and the successful wait threaded its nextBatch forward.
     expect(waits.map((w) => w.since)).toEqual([undefined, undefined, "s2"]);
   });
-});
 
+  test("a failed turn is recorded in the transcript and the loop keeps waiting", async () => {
+    // The provider is out of capacity: the turn's first LLM call throws. The
+    // transcript, not just stderr, must say why the agent went quiet, and the
+    // loop must survive to wait again.
+    script = [new Error("429 No capacity available")];
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events, waits } = await runLoopOnce(2, async (n) =>
+        n === 1 ? { hasActivity: true, nextBatch: "s2" } : { hasActivity: false, nextBatch: "s3" },
+      );
+
+      const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
+      expect(turns).toEqual([
+        expect.objectContaining({ type: "agent_turn_started", agentId: "alice", turn: 1 }),
+        expect.objectContaining({
+          type: "agent_turn_failed",
+          runId: "scenario-test",
+          agentId: "alice",
+          turn: 1,
+          error: "429 No capacity available",
+          timestamp: expect.any(String),
+        }),
+      ]);
+      expect(waits.length).toBe(2);
+
+      // Logged as a turn failure, not misreported as a failed wait.
+      const logged = errors.mock.calls.map((args) => String(args[0]));
+      expect(logged.some((line) => line.includes("turn 1 failed"))).toBe(true);
+      expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a failed wait is not recorded as a failed turn", async () => {
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events } = await runLoopOnce(2, async (n) => {
+        if (n === 1) throw new Error("dropped connection");
+        return { hasActivity: false, nextBatch: "s2" };
+      });
+
+      expect(events.filter((e) => e.type === "agent_turn_failed")).toHaveLength(0);
+      const logged = errors.mock.calls.map((args) => String(args[0]));
+      expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(true);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+});

@@ -101,6 +101,18 @@ _Avoid_: Moderator stance (a **stance** is an agent's position on the
 topic; the Moderator has none), classification (names the event, not the
 concept), verdict (only one part of an Assessment)
 
+**Turn**:
+One wake of an agent (or the Moderator) on room activity: it reads, may post,
+and records its stance (or, for the Moderator, one **Assessment**). Turns are
+numbered per agent from 1, independent across agents. In the event log an
+agent's turn opens with `agent_turn_started` and closes with exactly one of
+`agent_turn_ended` (it ran to completion) or `agent_turn_failed` (it threw;
+the event carries the error, e.g. an LLM provider out of capacity). A failed
+turn does not end the agent: it goes back to waiting for the room. An
+`agent_turn_started` left unclosed means the process died mid-turn.
+_Avoid_: Tick (the old global, scheduled unit; turns are per-agent and
+driven by activity)
+
 **Observer**:
 A human researcher reviewing a Run's transcript after it has finished, with
 no account in the room and no presence during the Run. Distinct from a

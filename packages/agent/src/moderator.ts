@@ -132,6 +132,13 @@ export class ModeratorRuntime {
   private lastTurnStartCount = 0;
 
   /**
+   * Monotonic count of the Moderator's Assessments in this Run, starting at 1.
+   * Names the turn in `agent_turn_failed` when an Assessment throws, the same
+   * way an agent's turn counter does.
+   */
+  private turn = 0;
+
+  /**
    * Best-effort count of messages currently in the room.
    */
   private async countRoomMessages(): Promise<number | null> {
@@ -156,6 +163,7 @@ export class ModeratorRuntime {
    */
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
     const { runId, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
+    this.turn += 1;
 
     await appendEvent(logDir, runId, {
       type: "agent_heartbeat",
@@ -319,6 +327,10 @@ export class ModeratorRuntime {
    * itself evidence the discussion may have trailed off.
    *
    * While waiting, emits an agent_heartbeat to provide liveness evidence.
+   *
+   * A failed wait is logged and re-waited from the same `since`; a failed
+   * Assessment is caught separately and recorded as `agent_turn_failed`, so the
+   * two failure modes stay distinguishable.
    */
   async runLoop(): Promise<void> {
     const { runId, mcp } = this.config;
@@ -343,24 +355,45 @@ export class ModeratorRuntime {
         timestamp: new Date().toISOString(),
       });
 
+      let hasActivity: boolean;
       try {
-        const { hasActivity, nextBatch } = await mcp.waitForActivity({ timeoutMs, since });
-        since = nextBatch;
-        let result: ModeratorTurnResult | undefined;
-        const polledAt = now();
-        if (hasActivity) {
-          lastActivityAt = lastAssessedAt = polledAt;
-          result = await this.runTurn();
-        } else if (polledAt - lastAssessedAt >= quietReassessAfterMs) {
-          lastAssessedAt = polledAt;
-          result = await this.runTurn({ quietForMs: polledAt - lastActivityAt });
-        }
-        if (result?.shouldEnd) {
+        const result = await mcp.waitForActivity({ timeoutMs, since });
+        since = result.nextBatch;
+        hasActivity = result.hasActivity;
+      } catch (err) {
+        console.error("[moderator] waiting for room activity failed; will resume waiting:", err);
+        continue;
+      }
+
+      let opts: { quietForMs?: number } | undefined;
+      const polledAt = now();
+      if (hasActivity) {
+        lastActivityAt = lastAssessedAt = polledAt;
+      } else if (polledAt - lastAssessedAt >= quietReassessAfterMs) {
+        lastAssessedAt = polledAt;
+        opts = { quietForMs: polledAt - lastActivityAt };
+      } else {
+        continue;
+      }
+
+      try {
+        const result = await this.runTurn(opts);
+        if (result.shouldEnd) {
           // Moderator classified STALE and posted; end the Run.
           return;
         }
       } catch (err) {
-        console.error("[moderator] waiting for room activity failed; will resume waiting:", err);
+        // A failed Assessment is recorded so the transcript says why the
+        // Moderator went quiet; the loop then waits for the next wake.
+        console.error(`[moderator] turn ${this.turn} failed; will resume waiting:`, err);
+        await appendEvent(this.config.logDir, runId, {
+          type: "agent_turn_failed",
+          runId,
+          agentId: "moderator",
+          turn: this.turn,
+          error: err instanceof Error ? err.message : String(err),
+          timestamp: new Date().toISOString(),
+        });
       }
     }
   }

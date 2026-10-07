@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,9 +6,11 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 
 // moderator.ts drives its tool loop through chatCompletion, so we mock
 // that before importing the module. The mcp client is passed in as a stub.
+// A scripted Error is thrown instead of answered, standing in for a provider
+// failure that outlasted chatCompletion's own retries.
 type ScriptedMessage = ChatMessage & { tool_calls?: ToolCall[] };
 
-let script: Array<ScriptedMessage> = [];
+let script: Array<ScriptedMessage | Error> = [];
 // The messages of every chatCompletion call, so a test can read the turn
 // message the Moderator was given.
 let llmCalls: ChatMessage[][] = [];
@@ -18,6 +20,7 @@ mock.module("./llm.js", () => ({
     llmCalls.push([...messages]);
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
+    if (next instanceof Error) throw next;
     return { message: next, usage: { promptTokens: 5, completionTokens: 5 } };
   },
 }));
@@ -505,6 +508,78 @@ describe("ModeratorRuntime", () => {
 
       expect(waitCalls).toBe(8);
       expect(turnMessages[0]).toMatch(/66 seconds/);
+    });
+
+    test("a failed Assessment is recorded in the transcript and the loop keeps waiting", async () => {
+      // Two activity wakes: the first Assessment's LLM call throws (provider out
+      // of capacity), the second classifies STALE and ends the Run -- proving
+      // the loop survived the failure.
+      script = [
+        new Error("429 No capacity available"),
+        assistant([classifyCall("stale", "Over")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { waitCalls, events } = await runQuietLoop({
+          polls: [active, active],
+          quietReassessAfterMs: 60_000,
+        });
+
+        expect(waitCalls).toBe(2);
+        const failed = events.filter((e) => e.type === "agent_turn_failed");
+        expect(failed).toEqual([
+          expect.objectContaining({
+            runId: RUN_ID,
+            agentId: "moderator",
+            turn: 1,
+            error: "429 No capacity available",
+            timestamp: expect.any(String),
+          }),
+        ]);
+        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+
+        const logged = errors.mock.calls.map((args) => String(args[0]));
+        expect(logged.some((line) => line.includes("turn 1 failed"))).toBe(true);
+        expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(false);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("a failed wait is not recorded as a failed Assessment", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      const mcp = createMcpStub();
+      let waitCalls = 0;
+      mcp.waitForActivity = async () => {
+        waitCalls++;
+        if (waitCalls === 1) throw new Error("dropped connection");
+        return { hasActivity: false, nextBatch: "s2" };
+      };
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+        isStopped: () => waitCalls >= 2,
+      });
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runtime.runLoop();
+        const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(events.filter((e) => e.type === "agent_turn_failed")).toHaveLength(0);
+        const logged = errors.mock.calls.map((args) => String(args[0]));
+        expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(true);
+      } finally {
+        errors.mockRestore();
+      }
     });
   });
 });

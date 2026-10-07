@@ -400,12 +400,11 @@ export class AgentRuntime {
       });
     }
 
-    // Close the turn bracket. The bracket is intentionally asymmetric: `turn_ended`
-    // is only reached when the turn runs to completion — if runTurn throws part-way
-    // (a hard homeserver rejection of a send, say) the `agent_turn_started` is left
-    // unclosed. That openness is the whole point: an unclosed `agent_turn_started`
-    // is the per-agent "this turn never completed" signature, the liveness evidence
-    // this bracket exists to provide.
+    // Close the turn bracket. `turn_ended` is only reached when the turn runs to
+    // completion — if runTurn throws part-way (a hard homeserver rejection of a
+    // send, say) runLoop closes the bracket with `agent_turn_failed` instead. An
+    // `agent_turn_started` left unclosed by either is the signature of a process
+    // that died mid-turn, the liveness evidence this bracket exists to provide.
     await appendEvent(logDir, runId, {
       type: "agent_turn_ended",
       runId,
@@ -444,9 +443,11 @@ export class AgentRuntime {
    * must never crash the process or end the Run: it is caught, logged, and the
    * loop resumes waiting. The `since` token is only advanced on a successful
    * wait, so a failed wait loses nothing and retries from the same position.
-   * Turn failures are handled inside `runTurn` (its self-correction guards);
-   * this loop only guards the waiting boundary, because a waiting failure is
-   * the failure mode that used to kill a Run on a Matrix blip.
+   *
+   * A turn that throws is caught separately: it is recorded as
+   * `agent_turn_failed` (with the error) in the transcript and the loop goes
+   * back to waiting. Keeping the two catches apart means a failed turn is never
+   * misreported as a failed wait.
    */
   async runLoop(): Promise<void> {
     const { runId, agentId, mcp } = this.config;
@@ -464,16 +465,34 @@ export class AgentRuntime {
         timestamp: new Date().toISOString(),
       });
 
+      let hasActivity: boolean;
       try {
-        const { hasActivity, nextBatch } = await mcp.waitForActivity({ timeoutMs, since });
-        since = nextBatch;
-        if (hasActivity) {
-          await this.runTurn();
-        }
+        const result = await mcp.waitForActivity({ timeoutMs, since });
+        since = result.nextBatch;
+        hasActivity = result.hasActivity;
       } catch (err) {
         // A dropped long-poll is transient: log and resume waiting rather than
         // letting the agent process die (which would end its half of the Run).
         console.error(`[${agentId}] waiting for room activity failed; will resume waiting:`, err);
+        continue;
+      }
+
+      if (!hasActivity) continue;
+      try {
+        await this.runTurn();
+      } catch (err) {
+        // A turn that throws (an LLM call that outlasted its retries, a send the
+        // homeserver rejected) closes its bracket with `agent_turn_failed` so
+        // the transcript says why the agent went quiet, then the loop waits on.
+        console.error(`[${agentId}] turn ${this.turn} failed; will resume waiting:`, err);
+        await appendEvent(this.config.logDir, runId, {
+          type: "agent_turn_failed",
+          runId,
+          agentId,
+          turn: this.turn,
+          error: err instanceof Error ? err.message : String(err),
+          timestamp: new Date().toISOString(),
+        });
       }
     }
   }
