@@ -964,4 +964,84 @@ describe("ModeratorRuntime", () => {
       expect(turnMessages[2]).toContain("2 new messages since your last assessment.");
     });
   });
+
+  describe("earlier Assessments", () => {
+    async function newRuntime(now: () => number) {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      return new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        now,
+      });
+    }
+
+    function systemPromptOf(call: ChatMessage[]): string {
+      return String(call.find((m) => m.role === "system")?.content ?? "");
+    }
+
+    test("the first Assessment claims no earlier Assessments", async () => {
+      llmCalls = [];
+      script = [assistant([classifyCall("active", "Opening arguments are coming in")]), assistant()];
+
+      await (await newRuntime(() => 0)).runTurn();
+
+      const prompt = systemPromptOf(llmCalls[0]!);
+      expect(prompt).toMatch(/first assessment/i);
+      expect(prompt).not.toMatch(/conversation history/i);
+    });
+
+    test("a second Assessment sees the first one's verdict, rationale and age", async () => {
+      llmCalls = [];
+      let clock = 0;
+      script = [
+        assistant([classifyCall("active", "Ada and Ben are still trading new arguments")]),
+        assistant(),
+        assistant([classifyCall("active", "Still moving")]),
+        assistant(),
+      ];
+
+      const runtime = await newRuntime(() => clock);
+      await runtime.runTurn();
+      clock = 45_000;
+      await runtime.runTurn();
+
+      const prompt = systemPromptOf(llmCalls[2]!);
+      expect(prompt).toContain("ACTIVE");
+      expect(prompt).toContain("Ada and Ben are still trading new arguments");
+      expect(prompt).toMatch(/45 seconds ago/);
+      expect(prompt).not.toMatch(/conversation history/i);
+    });
+
+    test("only a recent window of earlier Assessments is carried", async () => {
+      llmCalls = [];
+      script = [];
+      for (let i = 1; i <= 7; i++) {
+        script.push(assistant([classifyCall("active", `rationale number ${i}.`)]), assistant());
+      }
+
+      const runtime = await newRuntime(() => 0);
+      for (let i = 1; i <= 7; i++) await runtime.runTurn();
+
+      // The seventh Assessment's prompt carries the five before it, not the oldest.
+      const prompt = systemPromptOf(llmCalls[12]!);
+      expect(prompt).not.toContain("rationale number 1.");
+      for (let i = 2; i <= 6; i++) expect(prompt).toContain(`rationale number ${i}.`);
+      expect(prompt).not.toContain("rationale number 7.");
+    });
+
+    test("a turn that never classified leaves no Assessment behind", async () => {
+      llmCalls = [];
+      script = [assistant(), assistant([classifyCall("active", "Now classified")]), assistant()];
+
+      const runtime = await newRuntime(() => 0);
+      await runtime.runTurn();
+      await runtime.runTurn();
+
+      expect(systemPromptOf(llmCalls[1]!)).toMatch(/first assessment/i);
+    });
+  });
 });

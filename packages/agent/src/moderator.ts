@@ -46,6 +46,21 @@ export interface ModeratorTurnResult {
   shouldEnd: boolean;
 }
 
+/** One earlier Assessment, as carried into the Moderator's next Assessment. */
+interface PriorAssessment {
+  classification: "active" | "stale";
+  rationale: string;
+  /** When it was made, on the runtime's (injectable) clock. */
+  at: number;
+}
+
+/**
+ * How many of its most recent Assessments the Moderator is shown. Enough to see
+ * whether positions have frozen since it last looked, without the prompt
+ * growing for the whole Run.
+ */
+const PRIOR_ASSESSMENTS_SHOWN = 5;
+
 const CLASSIFY_TOOL: ToolSpec = {
   type: "function",
   function: {
@@ -79,9 +94,10 @@ const CLASSIFY_TOOL: ToolSpec = {
  */
 function buildModeratorSystemPrompt(params: {
   topic: string;
-  isFirstTurn: boolean;
+  priorAssessments: PriorAssessment[];
+  now: number;
 }): string {
-  const { topic, isFirstTurn } = params;
+  const { topic, priorAssessments, now } = params;
   return `You are a neutral Moderator observing a group discussion on the topic: "${topic}".
 
 Your role is to:
@@ -101,16 +117,27 @@ IMPORTANT STRUCTURAL CONSTRAINT (enforced by construction):
 - Posting a message (matrix_send_message) is ONLY reachable after classify_discussion returns "stale".
 - The two paths are mutually exclusive: if classification is "active", you CANNOT and MUST NOT call matrix_send_message.
 
-${
-  isFirstTurn
-    ? ""
-    : `
-Your most recent assessment is above in the conversation history.
+${buildPriorAssessmentsSection(priorAssessments, now)}`;
+}
 
-If you classified ACTIVE last turn and the discussion remains ACTIVE, do NOT post a message—just call classify_discussion again with the new evidence.
+/**
+ * Describes the Moderator's earlier Assessments (oldest first) so it can judge
+ * change over time, e.g. whether positions have frozen since it last looked.
+ */
+function buildPriorAssessmentsSection(priorAssessments: PriorAssessment[], now: number): string {
+  if (priorAssessments.length === 0) {
+    return "This is your first assessment of this discussion.\n";
+  }
+  const lines = priorAssessments.map(({ classification, rationale, at }) => {
+    const secondsAgo = Math.max(0, Math.round((now - at) / 1000));
+    return `- ${secondsAgo} seconds ago: ${classification.toUpperCase()}: ${rationale || "(no rationale given)"}`;
+  });
+  return `Your earlier assessments of this discussion (oldest first, at most the last ${PRIOR_ASSESSMENTS_SHOWN}):
+${lines.join("\n")}
+
+Compare the room now with what you saw then. If you classified ACTIVE last time and the discussion remains ACTIVE, do NOT post a message—just call classify_discussion again with the new evidence.
 If you classified ACTIVE but now see clear staleness, re-assess and post your closing message only if the new assessment is STALE.
-`
-}`;
+`;
 }
 
 /**
@@ -175,6 +202,9 @@ export class ModeratorRuntime {
    */
   private turn = 0;
 
+  /** The most recent Assessments, oldest first, bounded to PRIOR_ASSESSMENTS_SHOWN. */
+  private priorAssessments: PriorAssessment[] = [];
+
   /**
    * Best-effort count of messages currently in the room.
    */
@@ -200,6 +230,7 @@ export class ModeratorRuntime {
    */
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
     const { runId, topic, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
+    const now = this.config.now ?? Date.now;
     this.turn += 1;
     this.postedThisTurn = false;
 
@@ -222,7 +253,8 @@ export class ModeratorRuntime {
         role: "system",
         content: buildModeratorSystemPrompt({
           topic,
-          isFirstTurn: this.lastTurnStartCount === 0,
+          priorAssessments: this.priorAssessments,
+          now: now(),
         }),
       },
       {
@@ -238,6 +270,7 @@ export class ModeratorRuntime {
 
     let classification: "active" | "stale" = "active";
     let rationale = "";
+    let classified = false;
     let closingMessageId: string | null = null;
 
     // The tool-calling loop. The model must call classify_discussion exactly once.
@@ -273,6 +306,7 @@ export class ModeratorRuntime {
           } else if (rawClassification === "active" || rawClassification === "stale") {
             classification = rawClassification as "active" | "stale";
             rationale = args.rationale;
+            classified = true;
             await appendEvent(logDir, runId, {
               type: "moderator_classification",
               runId,
@@ -348,6 +382,12 @@ export class ModeratorRuntime {
 
     this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
     this.hasAssessed = true;
+
+    if (classified) {
+      this.priorAssessments = [...this.priorAssessments, { classification, rationale, at: now() }].slice(
+        -PRIOR_ASSESSMENTS_SHOWN,
+      );
+    }
 
     // Record the "Moderator ended Run" event only if STALE and we posted.
     if (classification === "stale" && closingMessageId) {
