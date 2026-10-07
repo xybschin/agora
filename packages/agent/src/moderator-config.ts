@@ -1,5 +1,5 @@
 import { resolveSamplingParams, type ResolvedSampling } from "./llm.js";
-import type { SamplingParams } from "@agora/shared";
+import type { RosterAgent, SamplingParams } from "@agora/shared";
 
 export interface ModeratorEnvConfig {
   runId: string;
@@ -9,6 +9,7 @@ export interface ModeratorEnvConfig {
   matrixAccessToken: string;
   logDir: string;
   mcpUrl: string;
+  roster: RosterAgent[];
   llm: { baseUrl: string; apiKey: string; model: string; sampling?: ResolvedSampling };
 }
 
@@ -37,6 +38,7 @@ export function loadModeratorEnvConfig(): ModeratorEnvConfig {
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),
     logDir: process.env.LOG_DIR ?? "/logs",
     mcpUrl: requireEnv("MCP_URL"),
+    roster: JSON.parse(requireEnv("ROSTER_JSON")) as RosterAgent[],
     llm: {
       baseUrl,
       apiKey,

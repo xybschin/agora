@@ -28,6 +28,16 @@ export interface AgentDefinition {
   persona: Persona;
 }
 
+/**
+ * One agent of a Scenario's roster as the Moderator sees it: who the agent is
+ * and which Matrix user posts on its behalf, so room messages can be attributed
+ * to roster agents.
+ */
+export interface RosterAgent {
+  agentId: string;
+  matrixUserId: string;
+}
+
 export interface BudgetConfig {
   maxTotalTokens?: number;
   maxTotalCostUsd?: number;

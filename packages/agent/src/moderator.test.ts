@@ -1123,4 +1123,91 @@ describe("ModeratorRuntime", () => {
       expect(systemPromptOf(llmCalls[1]!)).toMatch(/first assessment/i);
     });
   });
+
+  describe("STALE before every agent has spoken", () => {
+    const roster = [
+      { agentId: "alex", matrixUserId: "@agora-alex:example.com" },
+      { agentId: "bri", matrixUserId: "@agora-bri:example.com" },
+    ];
+
+    function roomWith(senders: string[]): string {
+      return JSON.stringify(
+        senders.map((sender, i) => ({
+          eventId: `$e${i}`,
+          sender,
+          senderDisplayName: sender,
+          content: sender === SETUP_USER_ID ? "**your message:** The floor is yours." : `post ${i}`,
+          createdAt: new Date().toISOString(),
+        })),
+      );
+    }
+
+    async function readEvents(logDir: string): Promise<Array<Record<string, unknown>>> {
+      const content = await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8");
+      return content
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    }
+
+    async function runStaleTurn(readRoomResult: string) {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      script = [
+        assistant([classifyCall("stale", "Nothing new is being said")]),
+        assistant([sendCall("Closing the discussion.")]),
+        assistant(),
+      ];
+      llmCalls = [];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        roster,
+        mcp: createMcpStub({ readRoomResult }) as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+      });
+      const result = await runtime.runTurn();
+      return { result, events: await readEvents(logDir) };
+    }
+
+    test("is refused, naming the silent agents, and recorded as ACTIVE", async () => {
+      // Only the Seed message and alex have posted; a reaction is not a post.
+      const room = JSON.parse(roomWith([SETUP_USER_ID, "@agora-alex:example.com"])) as unknown[];
+      room.push({
+        eventId: "$r",
+        sender: "@agora-bri:example.com",
+        senderDisplayName: "bri",
+        content: "[reaction] 👍",
+        createdAt: new Date().toISOString(),
+      });
+      const { result, events } = await runStaleTurn(JSON.stringify(room));
+
+      expect(result).toEqual({ classification: "active", shouldEnd: false });
+
+      // The model is told who has not spoken yet.
+      const classifyResult = llmCalls[1]!.find(
+        (m) => m.role === "tool" && m.name === "classify_discussion",
+      );
+      expect(classifyResult?.content).toContain("bri");
+      expect(classifyResult?.content).not.toContain("alex");
+
+      const classifications = events.filter((e) => e.type === "moderator_classification");
+      expect(classifications.map((e) => e.classification)).toEqual(["active"]);
+      expect(events.some((e) => e.type === "message")).toBe(false);
+      expect(events.some((e) => e.type === "moderator_ended_run")).toBe(false);
+    });
+
+    test("is accepted once every agent has posted, and the Run ends", async () => {
+      const { result, events } = await runStaleTurn(
+        roomWith([SETUP_USER_ID, "@agora-alex:example.com", "@agora-bri:example.com"]),
+      );
+
+      expect(result).toEqual({ classification: "stale", shouldEnd: true });
+      const classifications = events.filter((e) => e.type === "moderator_classification");
+      expect(classifications.map((e) => e.classification)).toEqual(["stale"]);
+      expect(events.some((e) => e.type === "moderator_ended_run")).toBe(true);
+    });
+  });
 });

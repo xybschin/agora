@@ -1,4 +1,4 @@
-import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
+import { appendEvent, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
@@ -11,6 +11,12 @@ export interface ModeratorRuntimeConfig {
   roomId: string;
   matrixSetupUserId: string;
   logDir: string;
+  /**
+   * The Scenario's agents with their Matrix users. A STALE Assessment is
+   * refused while any of them has not yet posted in the room. Omitted means no
+   * roster, so nothing is waited for.
+   */
+  roster?: readonly RosterAgent[];
   mcp: MatrixMcpClient;
   llm: LlmConfig;
   /**
@@ -227,6 +233,13 @@ export class ModeratorRuntime {
   private priorAssessments: PriorAssessment[] = [];
 
   /**
+   * Matrix users seen posting a message in the room. Accumulated across every
+   * read, so an agent that spoke once stays counted after its message scrolls
+   * out of the read window.
+   */
+  private readonly speakers = new Set<string>();
+
+  /**
    * Best-effort count of messages currently in the room.
    */
   private async countRoomMessages(): Promise<number | null> {
@@ -235,10 +248,34 @@ export class ModeratorRuntime {
         limit: 100,
       });
       const parsed = JSON.parse(resultText) as unknown;
-      return Array.isArray(parsed) ? parsed.length : null;
+      if (!Array.isArray(parsed)) return null;
+      this.noteSpeakers(parsed);
+      return parsed.length;
     } catch {
       return null;
     }
+  }
+
+  /** Records the senders of the messages (not reactions) in a room read. */
+  private noteSpeakers(roomMessages: unknown[]): void {
+    for (const entry of roomMessages) {
+      const { sender, content } = (entry ?? {}) as { sender?: unknown; content?: unknown };
+      if (typeof sender !== "string") continue;
+      if (typeof content === "string" && content.startsWith("[reaction] ")) continue;
+      this.speakers.add(sender);
+    }
+  }
+
+  /**
+   * The roster agents that have not yet posted in the room, re-reading the room
+   * first so a message that arrived during the turn counts. If the read fails,
+   * only what earlier reads saw is known, which errs on the side of waiting.
+   */
+  private async silentRosterAgents(): Promise<RosterAgent[]> {
+    const roster = this.config.roster ?? [];
+    if (roster.every((agent) => this.speakers.has(agent.matrixUserId))) return [];
+    await this.countRoomMessages();
+    return roster.filter((agent) => !this.speakers.has(agent.matrixUserId));
   }
 
   constructor(private readonly config: ModeratorRuntimeConfig) {}
@@ -341,6 +378,20 @@ export class ModeratorRuntime {
             classification = rawClassification as "active" | "stale";
             rationale = args.rationale;
             classified = true;
+            // STRUCTURAL INVARIANT: the discussion cannot be STALE before every
+            // roster agent has spoken; such an Assessment stands as ACTIVE.
+            const silent = classification === "stale" ? await this.silentRosterAgents() : [];
+            if (silent.length > 0) {
+              const names = silent.map((agent) => `${agent.agentId} (${agent.matrixUserId})`).join(", ");
+              classification = "active";
+              rationale = `STALE refused: not every agent has posted yet (${names}). Model's rationale: ${rationale}`;
+              resultText =
+                "ERROR: The discussion cannot be STALE before every agent has spoken. " +
+                `These agents have not posted in the room yet: ${names}. ` +
+                "Your Assessment has been recorded as ACTIVE. Do not call matrix_send_message.";
+            } else {
+              resultText = `classification recorded: ${classification}`;
+            }
             await appendEvent(logDir, runId, {
               type: "moderator_classification",
               runId,
@@ -348,7 +399,6 @@ export class ModeratorRuntime {
               rationale,
               timestamp: new Date().toISOString(),
             });
-            resultText = `classification recorded: ${classification}`;
           } else {
             resultText = `invalid classification "${String(args.classification)}"; must be "active" or "stale"`;
           }

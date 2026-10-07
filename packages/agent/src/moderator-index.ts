@@ -11,6 +11,7 @@ const runtime = new ModeratorRuntime({
   roomId: env.roomId,
   matrixSetupUserId: env.matrixSetupUserId,
   logDir: env.logDir,
+  roster: env.roster,
   mcp,
   llm: env.llm,
 });
