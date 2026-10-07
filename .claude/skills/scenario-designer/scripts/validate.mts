@@ -10,7 +10,7 @@
  *  3. Renders and writes the validated Scenario to scenarios/<name>.yaml.
  *
  * Usage:
- *   bun .claude/scenario-designer/scripts/validate.mts <input.json> [out.yaml]
+ *   bun .claude/skills/scenario-designer/scripts/validate.mts <input.json> [out.yaml]
  * Output defaults to scenarios/<name>.yaml. Exit 0 on success, non-zero with
  * the full list of problems otherwise.
  */
@@ -18,11 +18,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 /// <reference path="./js-yaml-shim.d.ts" />
-import yaml from "../../../packages/shared/node_modules/js-yaml/index.js";
-import { parseScenarioConfig } from "../../../packages/shared/src/index.js";
+import yaml from "../../../../packages/shared/node_modules/js-yaml/index.js";
+import { parseScenarioConfig } from "../../../../packages/shared/src/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(HERE, "../../../");
+const REPO_ROOT = resolve(HERE, "../../../../");
 
 const inputPath = process.argv[2];
 if (!inputPath) {
