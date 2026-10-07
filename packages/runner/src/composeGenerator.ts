@@ -81,6 +81,14 @@ export function generateComposeFile(params: {
         LLM_API_KEY: cred.llmApiKey,
         LLM_MODEL: cred.llmModel,
         ...(hasSampling ? { LLM_SAMPLING_JSON: JSON.stringify(mergedSampling) } : {}),
+        // The seed author posted the seed with its own account, so the seed
+        // opens its Own message history. Nobody else is told: to them it is
+        // another participant's message, read from the room like any other.
+        // Escaped because seeds quote prices ("$600"), which compose would
+        // otherwise try to interpolate as variables and refuse.
+        ...(agent.id === scenario.seedAuthor
+          ? { SEED_MESSAGE: escapeComposeInterpolation(scenario.seedMessage) }
+          : {}),
         PORT: "4000",
       },
     };
@@ -128,4 +136,12 @@ export function generateComposeFile(params: {
 
   const compose = { services, networks };
   return { yamlText: yaml.dump(compose), agentPorts };
+}
+
+/**
+ * Doubles every `$` so docker compose passes free text through literally
+ * instead of reading `$name` as a variable to interpolate.
+ */
+function escapeComposeInterpolation(text: string): string {
+  return text.replace(/\$/g, () => "$$");
 }

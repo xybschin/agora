@@ -8,7 +8,8 @@
  * room id is a per-Run value the runner holds rather than something this script
  * provisions once and every Run of the Scenario reuses. The setup account is
  * still registered here because the runner needs its token to create each
- * room, admit the agents, and post the seed message.
+ * room and admit the agents. (The seed message is posted by an agent, not the
+ * setup account, which is the Moderator.)
  *
  * If your homeserver requires registration tokens:
  *   Pass them with --registration-tokens tok1,tok2,...

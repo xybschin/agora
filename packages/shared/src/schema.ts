@@ -174,6 +174,10 @@ export const scenarioConfigSchema = z.object({
   name: z.string(),
   topic: z.string(),
   seedMessage: z.string(),
+  // The agent in the roster whose account posts the Seed message. Never the
+  // setup account: that is the Moderator, which would then read the seed as its
+  // own unanswered question. Membership in the roster is checked below.
+  seedAuthor: z.string(),
   maxRuntimeMs: z.number().int().positive(),
   maxToolStepsPerTurn: z.number().int().positive().default(6),
   budget: z.object({
@@ -194,7 +198,17 @@ export const scenarioConfigSchema = z.object({
   // Scenario that produced it). Optional: a Scenario that says nothing about
   // sampling must behave exactly as before and get the llm.ts defaults.
   samplingParams: samplingParamsSchema.optional(),
-}).strict();
+}).strict().superRefine((scenario, ctx) => {
+  // The seed author has to take part in the discussion: only a roster agent has
+  // an account in the Run's room and a view of the seed as its own message.
+  if (!scenario.agents.some((agent) => agent.id === scenario.seedAuthor)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["seedAuthor"],
+      message: `seedAuthor "${scenario.seedAuthor}" is not an agent in this Scenario's roster`,
+    });
+  }
+});
 
 export function parseScenarioConfig(raw: unknown) {
   try {

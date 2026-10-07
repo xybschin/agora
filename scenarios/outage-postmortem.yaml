@@ -11,6 +11,7 @@ seedMessage: >-
   failure actually was. Should this be pinned on the engineer who was on call,
   or is this really a problem with how we page people? Post where you land, and
   why.
+seedAuthor: eli
 maxRuntimeMs: 30000
 maxToolStepsPerTurn: 6
 budget:

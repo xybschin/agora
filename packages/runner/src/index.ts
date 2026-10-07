@@ -113,8 +113,10 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  // Post the Scenario's seed as the setup user before any agent acts, so the
-  // conversation starts with a moderator seed rather than a cold room.
+  // Post the Scenario's seed as its seed author before any agent acts, so the
+  // conversation starts with a participant's message rather than a cold room.
+  // Never as the setup account: that is the Moderator, which must not read the
+  // seed as its own.
   await seedRoom({ scenario, credentials, roomId });
 
   const { yamlText, agentPorts } = generateComposeFile({

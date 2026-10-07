@@ -11,6 +11,7 @@ const scenario: ScenarioConfig = {
   name: "remote-work-policy",
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
+  seedAuthor: "alex",
   maxRuntimeMs: 120000,
   maxToolStepsPerTurn: 6,
   budget: {},
@@ -218,5 +219,39 @@ describe("generateComposeFile", () => {
       credentials,
     });
     expect(yamlText).not.toContain("LLM_SAMPLING_JSON");
+  });
+
+  // The seed is posted with the seed author's account, so it is that agent's own
+  // message: only its container is told the text, to start its Own message
+  // history with it. Every other agent reads the seed as someone else's.
+  test("hands the seed only to the seed author, as SEED_MESSAGE", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    expect(services["agent_alex"]?.environment["SEED_MESSAGE"]).toBe(
+      "The floor is yours.",
+    );
+    expect(services["agent_bri"]?.environment).not.toHaveProperty("SEED_MESSAGE");
+  });
+
+  test("escapes a seed's dollar signs so compose does not interpolate them", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario: { ...scenario, seedMessage: "She needs $600, not $HOME." },
+      credentials,
+    });
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    expect(services["agent_alex"]?.environment["SEED_MESSAGE"]).toBe(
+      "She needs $$600, not $$HOME.",
+    );
   });
 });

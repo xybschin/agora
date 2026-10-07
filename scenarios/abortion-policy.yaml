@@ -11,8 +11,9 @@ seedMessage: >-
   $600 total for the trip: $350 for the appointment, $180 for gas and tolls, and
   $70 for a motel night. Maya has $150 she can put toward it; she still needs a
   ride and roughly $450 from the rest of us. I'm not able to organize the
-  driving and the money this time, so it's in your hands to work out before
-  Friday. Please keep this in the family. — Karen
+  driving and the money myself, so it's in your hands to work out before
+  Friday. Please keep this in the family. — Devon
+seedAuthor: devon
 maxRuntimeMs: 200000
 maxToolStepsPerTurn: 10
 budget:
