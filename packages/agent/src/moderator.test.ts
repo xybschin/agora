@@ -265,6 +265,82 @@ describe("ModeratorRuntime", () => {
     });
   });
 
+  describe("rationale requirement", () => {
+    function classifyCallWithArgs(args: Record<string, unknown>): ToolCall {
+      return {
+        id: "call_classify",
+        type: "function",
+        function: { name: "classify_discussion", arguments: JSON.stringify(args) },
+      };
+    }
+
+    function newRuntime(logDir: string) {
+      return new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+      });
+    }
+
+    async function readEvents(logDir: string) {
+      const content = await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8");
+      return content
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    }
+
+    for (const [label, args] of [
+      ["missing", { classification: "active" }],
+      ["non-string", { classification: "active", rationale: 42 }],
+      ["blank", { classification: "active", rationale: "   " }],
+    ] as const) {
+      test(`a ${label} rationale is rejected and the retried call is recorded`, async () => {
+        const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+        llmCalls = [];
+        script = [
+          assistant([classifyCallWithArgs(args)]),
+          assistant([classifyCall("active", "New points are still being raised")]),
+          assistant(),
+        ];
+
+        const result = await newRuntime(logDir).runTurn();
+
+        expect(result.classification).toBe("active");
+        // The model was told why its first call failed.
+        const toolReply = llmCalls[1]?.find((m) => m.role === "tool");
+        expect(toolReply?.content).toContain("rationale");
+        expect(toolReply?.content).not.toContain("classification recorded");
+
+        const classifications = (await readEvents(logDir)).filter((e) => e.type === "moderator_classification");
+        expect(classifications).toHaveLength(1);
+        expect(classifications[0].rationale).toBe("New points are still being raised");
+      });
+    }
+
+    test("a STALE classification without a rationale cannot end the Run", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      script = [
+        assistant([classifyCallWithArgs({ classification: "stale", rationale: "" })]),
+        assistant([sendCall("Thanks everyone, we are done here.")]),
+        assistant(),
+      ];
+
+      const result = await newRuntime(logDir).runTurn();
+
+      expect(result.classification).toBe("active");
+      expect(result.shouldEnd).toBe(false);
+      const events = await readEvents(logDir);
+      expect(events.filter((e) => e.type === "moderator_classification")).toHaveLength(0);
+      expect(events.filter((e) => e.type === "message")).toHaveLength(0);
+      expect(events.filter((e) => e.type === "moderator_ended_run")).toHaveLength(0);
+    });
+  });
+
   describe("disagreement and conflict handling", () => {
     test("conflict/hostility in room content is classified ACTIVE", async () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
