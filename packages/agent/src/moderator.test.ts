@@ -25,7 +25,7 @@ mock.module("./llm.js", () => ({
   },
 }));
 
-const { ModeratorRuntime } = await import("./moderator.js");
+const { ModeratorRuntime, buildModeratorTurnMessage } = await import("./moderator.js");
 
 const SETUP_USER_ID = "@moderator:example.com";
 const ROOM_ID = "!test:example.com";
@@ -885,6 +885,82 @@ describe("ModeratorRuntime", () => {
 
       const systemPrompt = llmCalls[0]?.find((m) => m.role === "system")?.content ?? "";
       expect(systemPrompt).toContain(TOPIC);
+    });
+  });
+
+  describe("turn message", () => {
+    test("the first Assessment says the discussion has just started and counts the room", () => {
+      const msg = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 1, newMessages: 0 });
+      expect(msg).toContain("first assessment");
+      expect(msg).toContain("just started");
+      expect(msg).toContain("The room holds 1 message so far.");
+      expect(msg).not.toMatch(/no new messages/i);
+    });
+
+    test("the first Assessment pluralises the count and copes with an uncounted room", () => {
+      expect(buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: 3, newMessages: 0 })).toContain(
+        "The room holds 3 messages so far.",
+      );
+      const uncounted = buildModeratorTurnMessage({ isFirstAssessment: true, messageCount: null, newMessages: 0 });
+      expect(uncounted).toContain("first assessment");
+      expect(uncounted).not.toMatch(/no new messages/i);
+    });
+
+    test("a later Assessment reports the new messages since the previous one", () => {
+      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 2 })).toContain(
+        "2 new messages since your last assessment.",
+      );
+      expect(buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 5, newMessages: 1 })).toContain(
+        "1 new message since your last assessment.",
+      );
+    });
+
+    test("a later Assessment woken by activity is never told there are no new messages", () => {
+      // The count can stay put when the room cannot be counted or is past the read limit.
+      const msg = buildModeratorTurnMessage({ isFirstAssessment: false, messageCount: 100, newMessages: 0 });
+      expect(msg).not.toMatch(/no new messages/i);
+      expect(msg).toContain("new activity");
+    });
+
+    test("a quiet-room reassessment reports the silence duration", () => {
+      const msg = buildModeratorTurnMessage({
+        isFirstAssessment: false,
+        messageCount: 4,
+        newMessages: 0,
+        quietForMs: 90_000,
+      });
+      expect(msg).toMatch(/quiet.*90 seconds/);
+    });
+
+    test("runTurn tells the first Assessment the room's count and later ones what is new", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      llmCalls = [];
+      let room = [{ body: "Seed" }];
+      const mcp = createMcpStub();
+      mcp.callTool = async () => JSON.stringify(room);
+      script = [
+        assistant([classifyCall("active", "Just begun")]),
+        assistant(),
+        assistant([classifyCall("active", "Replies coming in")]),
+        assistant(),
+      ];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+      });
+
+      await runtime.runTurn();
+      room = [...room, { body: "a" }, { body: "b" }];
+      await runtime.runTurn();
+
+      const turnMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
+      expect(turnMessages[0]).toContain("first assessment");
+      expect(turnMessages[0]).toContain("The room holds 1 message so far.");
+      expect(turnMessages[2]).toContain("2 new messages since your last assessment.");
     });
   });
 });

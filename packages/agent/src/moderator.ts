@@ -114,16 +114,34 @@ If you classified ACTIVE but now see clear staleness, re-assess and post your cl
 }
 
 /**
- * Builds the per-turn user message for the Moderator. Tells it how many new
- * messages have arrived since its last assessment.
+ * Builds the per-turn user message for the Moderator. The first Assessment is
+ * told the discussion has just begun and how many messages the room holds;
+ * later Assessments woken by room activity are told how many messages arrived
+ * since the previous one; quiet-room reassessments are told how long the room
+ * has been silent. `messageCount` is null when the room could not be counted.
  */
-function buildModeratorTurnMessage(newMessages: number, quietForMs?: number): string {
+export function buildModeratorTurnMessage(params: {
+  isFirstAssessment: boolean;
+  messageCount: number | null;
+  newMessages: number;
+  quietForMs?: number;
+}): string {
+  const { isFirstAssessment, messageCount, newMessages, quietForMs } = params;
   if (quietForMs !== undefined) {
     const seconds = Math.round(quietForMs / 1000);
     return `The room has been quiet: no new messages for about ${seconds} seconds. Read the room and judge whether the discussion has trailed off (STALE) or is merely pausing (ACTIVE).`;
   }
+  if (isFirstAssessment) {
+    const holds =
+      messageCount === null
+        ? "Read the room to see what has been said so far."
+        : `The room holds ${messageCount} message${messageCount === 1 ? "" : "s"} so far.`;
+    return `This is your first assessment: the discussion has just started. ${holds} Read the room and assess.`;
+  }
   if (newMessages <= 0) {
-    return "No new messages since your last assessment. Check if the discussion is still active or has become stale.";
+    // Woken by room activity, but the count did not move (it could not be
+    // read, or the room holds more than one read returns): never claim silence.
+    return "There has been new activity in the room since your last assessment. Read and reassess.";
   }
   return `${newMessages} new message${newMessages === 1 ? "" : "s"} since your last assessment. Read and reassess.`;
 }
@@ -140,6 +158,9 @@ export class ModeratorRuntime {
    * activity that woke it.
    */
   private lastTurnStartCount = 0;
+
+  /** Whether an Assessment has run yet, so the first one can say so. */
+  private hasAssessed = false;
 
   /**
    * Whether the current Assessment has posted its closing message. A failed
@@ -206,7 +227,12 @@ export class ModeratorRuntime {
       },
       {
         role: "user",
-        content: buildModeratorTurnMessage(newMessages, opts?.quietForMs),
+        content: buildModeratorTurnMessage({
+          isFirstAssessment: !this.hasAssessed,
+          messageCount: currentCount,
+          newMessages,
+          quietForMs: opts?.quietForMs,
+        }),
       },
     ];
 
@@ -321,6 +347,7 @@ export class ModeratorRuntime {
     }
 
     this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
+    this.hasAssessed = true;
 
     // Record the "Moderator ended Run" event only if STALE and we posted.
     if (classification === "stale" && closingMessageId) {
