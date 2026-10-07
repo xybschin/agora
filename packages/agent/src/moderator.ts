@@ -215,9 +215,15 @@ export class ModeratorRuntime {
         if (call.function.name === "classify_discussion") {
           // Record the classification event.
           const rawClassification = String(args.classification).toLowerCase();
-          if (rawClassification === "active" || rawClassification === "stale") {
+          if (typeof args.rationale !== "string" || args.rationale.trim().length === 0) {
+            // Not recorded, so a STALE call without a reason cannot open the
+            // posting gate; the model retries with a rationale.
+            resultText =
+              "classify_discussion rejected: 'rationale' must be a non-empty string. " +
+              "Call classify_discussion again and say why the discussion is active or stale.";
+          } else if (rawClassification === "active" || rawClassification === "stale") {
             classification = rawClassification as "active" | "stale";
-            rationale = typeof args.rationale === "string" ? args.rationale : "";
+            rationale = args.rationale;
             await appendEvent(logDir, runId, {
               type: "moderator_classification",
               runId,
