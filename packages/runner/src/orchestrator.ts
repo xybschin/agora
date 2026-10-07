@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ScenarioConfig, SequencedEvent, UsageEvent } from "@agora/shared";
 import type { BudgetTracker } from "./budget.js";
+import { createModeratorWatch, type ModeratorWatch } from "./moderatorWatch.js";
 
 export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise<void> {
   for (const url of urls) {
@@ -34,6 +35,9 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
  * The runner's job is to detect when the Run reaches one of these four terminal
  * conditions and return control to the caller to write the terminal event and tear down.
  *
+ * While it supervises, it also shows the operator each Moderator Assessment as it
+ * lands and warns if the Moderator goes quiet (see `createModeratorWatch`).
+ *
  * `stopWhen` is checked periodically while supervising (not just at intervals):
  * a cancel is recorded as `cancelled` when detected, and control returns to the caller
  * so the signal handler can write the terminal event.
@@ -44,6 +48,7 @@ export async function superviseRunToTerminal(params: {
   logDir: string;
   budget: BudgetTracker;
   stopWhen?: () => boolean;
+  moderatorWatch?: ModeratorWatch;
 }): Promise<
   | { outcome: "moderator_ended"; rationale: string; messageId: string }
   | { outcome: "wall_clock_exceeded" }
@@ -51,6 +56,7 @@ export async function superviseRunToTerminal(params: {
   | { outcome: "cancelled" }
 > {
   const { runId, scenario, logDir, budget, stopWhen } = params;
+  const moderatorWatch = params.moderatorWatch ?? createModeratorWatch();
   const runtimeStartTime = Date.now();
   const transcriptPath = join(logDir, runId, "events.jsonl");
 
@@ -75,6 +81,10 @@ export async function superviseRunToTerminal(params: {
     // Read the transcript and check for terminal events.
     try {
       const events = readTranscriptEvents(transcriptPath);
+
+      // Before the terminal check, so the STALE Assessment that ends the Run is
+      // shown too.
+      moderatorWatch.observe(events);
 
       // Check for moderator_ended_run (successful completion).
       for (const event of events) {
