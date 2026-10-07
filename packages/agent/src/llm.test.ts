@@ -7,7 +7,7 @@ import type { SamplingParams } from "@agora/shared";
 // fake's create() delegates to a mutable `mockCreate` the tests set per case;
 // OpenAI.APIError is faked too, so isUnsupportedParameterError's instanceof
 // check sees a real (fake) API error.
-let mockCreate: ((params: Record<string, unknown>) => unknown) | null = null;
+let mockCreate: ((params: Record<string, unknown>, options?: { signal?: AbortSignal }) => unknown) | null = null;
 // The faked openai class, captured so tests can throw its APIError without an
 // await inside a non-async create callback.
 let OpenAIMock:
@@ -37,9 +37,9 @@ mock.module("openai", () => {
     static APIConnectionError = FakeAPIConnectionError;
     chat = {
       completions: {
-        create: (params: Record<string, unknown>) => {
+        create: (params: Record<string, unknown>, options?: { signal?: AbortSignal }) => {
           if (!mockCreate) throw new Error("no mockCreate installed for this test");
-          return mockCreate(params);
+          return mockCreate(params, options);
         },
       },
     };
@@ -203,13 +203,17 @@ describe("chatCompletion fallback on unsupported parameters", () => {
 });
 
 describe("chatCompletion retry on transient failures", () => {
-  // Retry timing is injected: sleeps are recorded instead of awaited, and the
-  // jitter source is pinned so delays are deterministic.
+  // Retry timing is injected: sleeps are recorded instead of awaited and
+  // advance a fake clock, and the jitter source is pinned so delays are
+  // deterministic.
   let sleeps: number[];
+  let clock: number;
   const retry = (overrides: Record<string, unknown> = {}) => ({
     sleep: async (ms: number) => {
       sleeps.push(ms);
+      clock += ms;
     },
+    now: () => clock,
     random: () => 1,
     ...overrides,
   });
@@ -217,6 +221,7 @@ describe("chatCompletion retry on transient failures", () => {
   beforeEach(() => {
     mockCreate = null;
     sleeps = [];
+    clock = 0;
   });
 
   test("recovers after a few 429s, backing off exponentially", async () => {
@@ -360,5 +365,90 @@ describe("chatCompletion retry on transient failures", () => {
     expect(calls).toHaveLength(3);
     expect(calls[2]?.temperature).toBeUndefined();
     expect(sleeps).toHaveLength(1);
+  });
+});
+
+describe("chatCompletion bound on a hanging provider", () => {
+  // A provider that accepts the connection and never answers. These tests run
+  // on the real clock with millisecond budgets, because the bound under test
+  // is wall-clock time, not the sum of backoff sleeps.
+  const hang = (_params: Record<string, unknown>, options?: { signal?: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      options?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+  const fast = { baseDelayMs: 5, maxDelayMs: 5, random: () => 1 };
+
+  beforeEach(() => {
+    mockCreate = null;
+  });
+
+  test("a hung attempt is cut off after attemptTimeoutMs and retried", async () => {
+    let calls = 0;
+    mockCreate = (params, options) => {
+      calls++;
+      return calls === 1 ? hang(params, options) : completion(params);
+    };
+    const result = await chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/h1` }, [], [], {
+      ...fast,
+      attemptTimeoutMs: 20,
+      maxTotalWaitMs: 1_000,
+    });
+    expect(result.message.content).toBe("sure, I can go");
+    expect(calls).toBe(2);
+  });
+
+  test("the timed-out request is aborted, not left running", async () => {
+    const signals: Array<AbortSignal | undefined> = [];
+    mockCreate = (params, options) => {
+      signals.push(options?.signal);
+      return signals.length === 1 ? hang(params, options) : completion(params);
+    };
+    await chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/h2` }, [], [], {
+      ...fast,
+      attemptTimeoutMs: 20,
+      maxTotalWaitMs: 1_000,
+    });
+    expect(signals[0]?.aborted).toBe(true);
+  });
+
+  test("a provider that always hangs fails within maxTotalWaitMs", async () => {
+    let calls = 0;
+    mockCreate = (params, options) => {
+      calls++;
+      return hang(params, options);
+    };
+    const started = Date.now();
+    await expect(
+      chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/h3` }, [], [], {
+        ...fast,
+        maxAttempts: 100,
+        attemptTimeoutMs: 30,
+        maxTotalWaitMs: 150,
+      }),
+    ).rejects.toThrow("Failed to reach LLM at");
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(140);
+    expect(elapsed).toBeLessThan(400);
+    expect(calls).toBeGreaterThan(1);
+  });
+
+  test("the sampling fallback shares the same deadline", async () => {
+    let calls = 0;
+    mockCreate = (params, options) => {
+      calls++;
+      if (calls === 1) throw new OpenAIMock!.APIError("'temperature' is not allowed for this model", 400);
+      return hang(params, options);
+    };
+    const started = Date.now();
+    await expect(
+      chatCompletion(
+        { ...BASE, baseUrl: `${BASE.baseUrl}/h4`, sampling: resolveSamplingParams("alex") },
+        [],
+        [],
+        { ...fast, maxAttempts: 100, attemptTimeoutMs: 30, maxTotalWaitMs: 150 },
+      ),
+    ).rejects.toThrow("Failed to reach LLM at");
+    expect(Date.now() - started).toBeLessThan(400);
+    expect(calls).toBeGreaterThan(2);
   });
 });

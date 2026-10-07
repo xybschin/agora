@@ -23,8 +23,10 @@ import type { SamplingParams } from "@agora/shared";
  * dies because a provider declined a penalty. If the stripped call still
  * fails, that genuine error is surfaced.
  *
- * Transient failures (429, 5xx, connection errors) are retried with jittered
- * exponential backoff before either call gives up -- see `RetryOptions`.
+ * Transient failures (429, 5xx, connection errors, hung requests) are retried
+ * with jittered exponential backoff before either call gives up -- see
+ * `RetryOptions`. One chatCompletion, retries and the sampling fallback
+ * included, never runs longer than `maxTotalWaitMs` (5 minutes by default).
  */
 
 export interface ChatMessage {
@@ -144,7 +146,8 @@ function getClient(config: LlmConfig): OpenAI {
   let client = clients.get(key);
   if (!client) {
     // The SDK's built-in retries are off: chatCompletion owns the retry policy
-    // (see RetryOptions), and stacking the two would multiply attempts.
+    // (see RetryOptions), and stacking the two would multiply attempts. Its
+    // 10-minute request timeout is superseded per call by attemptTimeoutMs.
     client = new OpenAI({ baseURL, apiKey: config.apiKey, maxRetries: 0 });
     clients.set(key, client);
   }
@@ -205,17 +208,27 @@ function isUnsupportedParameterError(error: unknown): boolean {
  * rather than costing an agent or the Moderator its turn. Delays grow
  * exponentially from `baseDelayMs`, each capped at `maxDelayMs`, with full
  * jitter (the delay is scaled by `random()`) so a room of agents that all hit
- * the same 429 doesn't retry in lockstep. Retrying stops at `maxAttempts`
- * calls, or earlier once the next sleep would push the cumulative wait past
- * `maxTotalWaitMs`; the last provider error is then surfaced. `sleep` and
- * `random` exist so tests can drive the timing.
+ * the same 429 doesn't retry in lockstep.
+ *
+ * `maxTotalWaitMs` is a wall-clock deadline for the whole chatCompletion --
+ * time spent inside attempts counts as well as the sleeps between them, and
+ * the sampling fallback draws on the same deadline rather than starting a
+ * fresh one. Each attempt is also aborted after `attemptTimeoutMs` (or at the
+ * deadline, if sooner), and that timeout is retried like any other transient
+ * failure, so a provider that accepts the connection and then hangs costs an
+ * attempt, not the SDK's 10-minute default. Retrying stops at `maxAttempts`
+ * calls, or earlier once the next sleep would cross the deadline; the last
+ * error is then surfaced. `sleep`, `now` and `random` exist so tests can drive
+ * the timing.
  */
 export interface RetryOptions {
   maxAttempts: number;
   baseDelayMs: number;
   maxDelayMs: number;
   maxTotalWaitMs: number;
+  attemptTimeoutMs: number;
   sleep: (ms: number) => Promise<void>;
+  now: () => number;
   random: () => number;
 }
 
@@ -223,34 +236,75 @@ const DEFAULT_RETRY: RetryOptions = {
   maxAttempts: 8,
   baseDelayMs: 1_000,
   maxDelayMs: 30_000,
-  maxTotalWaitMs: 120_000,
+  // Generous on purpose: requests don't stream, so a slow-but-healthy
+  // completion (a CPU-backed local model over a long transcript, a reasoning
+  // model) is indistinguishable from a hung one until it returns. 3 minutes
+  // per attempt leaves room for one retry after a real hang inside the
+  // 5-minute deadline, still far under a Run's maxRuntimeMs.
+  maxTotalWaitMs: 300_000,
+  attemptTimeoutMs: 180_000,
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: Date.now,
   random: Math.random,
 };
 
+/** An attempt that outlived its time slice; transient, like a dropped connection. */
+class AttemptTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`LLM request timed out after ${ms}ms`);
+    this.name = "AttemptTimeoutError";
+  }
+}
+
 /**
  * True for failures worth waiting out: rate limiting (429), server errors
- * (5xx) and connection failures (the SDK's APIConnectionError, an APIError
- * with no status). Every other 4xx is the request's fault and retrying it
- * would only repeat the refusal.
+ * (5xx), connection failures (the SDK's APIConnectionError, an APIError
+ * with no status) and attempts cut off by attemptTimeoutMs. Every other 4xx
+ * is the request's fault and retrying it would only repeat the refusal.
  */
 function isTransientError(error: unknown): boolean {
+  if (error instanceof AttemptTimeoutError) return true;
   if (!(error instanceof OpenAI.APIError)) return false;
   const status = error.status;
   return status === undefined || status === 429 || status >= 500;
 }
 
-async function withRetry<T>(retry: RetryOptions, call: () => Promise<T>): Promise<T> {
-  let waited = 0;
+/**
+ * Runs one attempt, aborting it once `timeoutMs` passes. The signal reaches
+ * the SDK so the HTTP request is torn down, not just abandoned; the timer
+ * settles the race regardless, in case the request ignores the abort.
+ */
+async function withTimeout<T>(timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new AttemptTimeoutError(timeoutMs));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([call(controller.signal), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withRetry<T>(
+  retry: RetryOptions,
+  deadline: number,
+  call: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
-      return await call();
+      const remaining = deadline - retry.now();
+      if (remaining <= 0) throw new AttemptTimeoutError(0);
+      return await withTimeout(Math.min(retry.attemptTimeoutMs, remaining), call);
     } catch (error) {
       if (!isTransientError(error) || attempt >= retry.maxAttempts) throw error;
       const ceiling = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** (attempt - 1));
       const delay = Math.round(ceiling * retry.random());
-      if (waited + delay > retry.maxTotalWaitMs) throw error;
-      waited += delay;
+      if (retry.now() + delay >= deadline) throw error;
       console.error(
         `[LLM] Transient failure (${error instanceof Error ? error.message : String(error)}); ` +
           `retry ${attempt}/${retry.maxAttempts - 1} in ${delay}ms`,
@@ -296,6 +350,7 @@ export async function chatCompletion(
 ): Promise<ChatCompletionResult> {
   const client = getClient(config);
   const retry = { ...DEFAULT_RETRY, ...retryOverrides };
+  const deadline = retry.now() + retry.maxTotalWaitMs;
 
   console.error(`[LLM] Sending request to ${config.baseUrl}`, {
     model: config.model,
@@ -305,8 +360,8 @@ export async function chatCompletion(
   });
 
   try {
-    const response = await withRetry(retry, () =>
-      client.chat.completions.create(buildCreateParams(client, config, messages, tools, config.sampling)),
+    const response = await withRetry(retry, deadline, (signal) =>
+      client.chat.completions.create(buildCreateParams(client, config, messages, tools, config.sampling), { signal }),
     );
 
     console.error(`[LLM] Got response with ${response.choices.length} choice(s)`);
@@ -324,8 +379,8 @@ export async function chatCompletion(
         `[LLM] Provider rejected sampling params (${error instanceof Error ? error.message : String(error)}); retrying without sampling`,
       );
       try {
-        const response = await withRetry(retry, () =>
-          client.chat.completions.create(buildCreateParams(client, config, messages, tools, undefined)),
+        const response = await withRetry(retry, deadline, (signal) =>
+          client.chat.completions.create(buildCreateParams(client, config, messages, tools, undefined), { signal }),
         );
         const result = toResult(response);
         if (result) return result;
