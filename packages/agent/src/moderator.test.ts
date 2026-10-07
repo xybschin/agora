@@ -970,6 +970,7 @@ describe("ModeratorRuntime", () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       return new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
