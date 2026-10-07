@@ -1,5 +1,5 @@
 import yaml from "js-yaml";
-import type { ScenarioConfig, CredentialsFile } from "@agora/shared";
+import type { ScenarioConfig, CredentialsFile, RosterAgent } from "@agora/shared";
 
 export interface ComposeGenerationResult {
   yamlText: string;
@@ -35,6 +35,7 @@ export function generateComposeFile(params: {
   const networks: Record<string, { external?: true }> = {};
   const services: Record<string, unknown> = {};
   const mcpNetworks: string[] = [];
+  const roster: RosterAgent[] = [];
 
   // The per-agent isolation networks plus the shared infra network the agent
   // and mcp-server containers use to reach Synapse by container DNS.
@@ -43,6 +44,7 @@ export function generateComposeFile(params: {
   scenario.agents.forEach((agent, index) => {
     const cred = credentials.agents[agent.id];
     if (!cred) throw new Error(`No credentials entry for agent "${agent.id}"`);
+    roster.push({ agentId: agent.id, matrixUserId: cred.matrixUserId });
 
     const netName = `net_${agent.id}`;
     networks[netName] = {};
@@ -120,6 +122,9 @@ export function generateComposeFile(params: {
       MATRIX_ACCESS_TOKEN: credentials.matrixSetupAccessToken,
       MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
       MCP_URL: "http://mcp_server:3000/mcp",
+      // The Scenario's roster, so the Moderator can tell which agents have
+      // posted in the room.
+      ROSTER_JSON: JSON.stringify(roster),
       LLM_BASE_URL: credentials.agents[scenario.agents[0]?.id || ""]?.llmBaseUrl || "http://localhost",
       LLM_API_KEY: credentials.agents[scenario.agents[0]?.id || ""]?.llmApiKey || "test",
       LLM_MODEL: credentials.agents[scenario.agents[0]?.id || ""]?.llmModel || "test",

@@ -210,6 +210,25 @@ describe("generateComposeFile", () => {
     });
   });
 
+  test("gives the Moderator the roster: every agent id with its Matrix user", () => {
+    // The Moderator attributes room messages to roster agents by Matrix user,
+    // e.g. to refuse a STALE Assessment while an agent has not spoken yet.
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    expect(JSON.parse(services["moderator"]!.environment["ROSTER_JSON"]!)).toEqual([
+      { agentId: "alex", matrixUserId: "@agora-alex:localhost" },
+      { agentId: "bri", matrixUserId: "@agora-bri:localhost" },
+    ]);
+  });
+
   test("emits no LLM_SAMPLING_JSON when neither source sets sampling", () => {
     const { yamlText } = generateComposeFile({
       runId: "remote-work-policy-1759000000000",
