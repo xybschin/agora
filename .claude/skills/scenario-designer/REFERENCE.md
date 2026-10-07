@@ -124,7 +124,8 @@ its own transcript in `logs/<runId>/events.jsonl` (see `docs/CONTEXT.md`).
      manufactures rather than tests bullying.
    - *Too short a wall-clock limit* — `maxRuntimeMs` under 60s: turns are driven
      by events, not ticks, so a sub-minute cap usually ends the Run before any
-     phenomenon can develop.
+     phenomenon can develop. This one is only a **warning**: it is printed, but
+     the Scenario is still rendered.
 3. **Render**: dumps the validated object to
    `scenarios/<name>.yaml` (block scalars for the multi-line strings, quoted
    to keep YAML-safe).

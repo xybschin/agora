@@ -64,12 +64,15 @@ try {
 // ---- 2. Design heuristics (only if the document is at least structurable) ----
 const agents = (raw as { agents?: unknown[] } | undefined)?.agents;
 if (Array.isArray(agents) && agents.length >= 2) {
-  const designProblems = designChecks(raw as { agents: AgentRow[]; maxRuntimeMs?: unknown });
+  const designProblems = designChecks(raw as { agents: AgentRow[] });
   if (designProblems.length > 0) {
     designProblems.forEach((p) => console.error(p));
     process.exit(1);
   }
 }
+
+// Advisory only: printed, but the Scenario is still rendered.
+runtimeWarnings((raw as { maxRuntimeMs?: unknown } | undefined)?.maxRuntimeMs).forEach((w) => console.warn(w));
 
 // ---- 3. Render ----
 if (config === undefined) {
@@ -98,7 +101,7 @@ interface AgentRow {
   };
 }
 
-function designChecks(input: { agents: AgentRow[]; maxRuntimeMs?: unknown }): string[] {
+function designChecks(input: { agents: AgentRow[] }): string[] {
   const problems: string[] = [];
   const rows = input.agents;
   const trait = (r: AgentRow, k: "conformity" | "assertiveness" | "opennessToEvidence") =>
@@ -146,15 +149,21 @@ function designChecks(input: { agents: AgentRow[]; maxRuntimeMs?: unknown }): st
     }
   }
 
-  // Wall-clock limit too short to allow several exchanges. Agents are
-  // event-driven (not tick-scheduled), so a discussion needs enough running
-  // time for multiple turns each; a sub-minute cap usually ends the Run before
-  // any phenomenon can develop.
-  const maxRuntimeMs = num(input.maxRuntimeMs);
-  if (maxRuntimeMs !== undefined && maxRuntimeMs < 60_000) {
-    problems.push(`design: maxRuntimeMs of ${maxRuntimeMs}ms is very short — events, not ticks, drive turns, so give the discussion room for several exchanges; consider >= 120000 (2 minutes).`);
-  }
   return problems;
+}
+
+/**
+ * Wall-clock limit too short to allow several exchanges. Agents are
+ * event-driven (not tick-scheduled), so a discussion needs enough running
+ * time for multiple turns each; a sub-minute cap usually ends the Run before
+ * any phenomenon can develop. A warning, not a design error: a short Run is
+ * still a legitimate (e.g. smoke-test) Scenario.
+ */
+function runtimeWarnings(value: unknown): string[] {
+  if (typeof value === "number" && Number.isFinite(value) && value < 60_000) {
+    return [`warning: maxRuntimeMs of ${value}ms is very short — events, not ticks, drive turns, so give the discussion room for several exchanges; consider >= 120000 (2 minutes).`];
+  }
+  return [];
 }
 
 function renderYaml(c: ScenarioConfigLike): string {

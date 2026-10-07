@@ -105,9 +105,10 @@ Rules of thumb that make phenomena *observable* rather than noise:
 
 ### 3. Validate and render
 Run `validate.mts` (above). It checks the schema **and** the design heuristics
-(flat cast, no stance spread, isolated low-assertiveness target, too short a
-wall-clock limit). Fix anything it reports and re-run. It exits 0 and writes
-the YAML only when everything is clean.
+(flat cast, no stance spread, isolated low-assertiveness target) and warns
+about too short a wall-clock limit. Fix any error it reports and re-run. It
+exits 0 and writes the YAML only when there are no errors; a warning alone
+does not block the render, but mention it to the user.
 
 ### 4. Confirm and run
 The skill is done when `scenarios/<name>.yaml` is written and validates. The
