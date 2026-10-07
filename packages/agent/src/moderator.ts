@@ -6,6 +6,8 @@ import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from 
 
 export interface ModeratorRuntimeConfig {
   runId: string;
+  /** The Scenario's topic, so the Moderator can judge whether arguments are on-topic. */
+  topic: string;
   roomId: string;
   matrixSetupUserId: string;
   logDir: string;
@@ -176,7 +178,7 @@ export class ModeratorRuntime {
    * staying silent rather than by new activity.
    */
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
-    const { runId, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
+    const { runId, topic, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
     this.turn += 1;
     this.postedThisTurn = false;
 
@@ -198,7 +200,7 @@ export class ModeratorRuntime {
       {
         role: "system",
         content: buildModeratorSystemPrompt({
-          topic: "the discussion",
+          topic,
           isFirstTurn: this.lastTurnStartCount === 0,
         }),
       },

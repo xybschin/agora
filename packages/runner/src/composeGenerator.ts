@@ -115,6 +115,7 @@ export function generateComposeFile(params: {
     volumes: ["../logs:/logs"],
     environment: {
       RUN_ID: runId,
+      SCENARIO_TOPIC: scenario.topic,
       MATRIX_ROOM_ID: roomId,
       MATRIX_SETUP_USER_ID: credentials.matrixSetupUserId,
       MATRIX_ACCESS_TOKEN: credentials.matrixSetupAccessToken,

@@ -30,6 +30,7 @@ const { ModeratorRuntime } = await import("./moderator.js");
 const SETUP_USER_ID = "@moderator:example.com";
 const ROOM_ID = "!test:example.com";
 const RUN_ID = "test-run-1";
+const TOPIC = "Should the speed limit change?";
 
 function classifyCall(classification: "active" | "stale", rationale: string): ToolCall {
   return {
@@ -111,6 +112,7 @@ describe("ModeratorRuntime", () => {
       const mcp = createMcpStub();
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -153,6 +155,7 @@ describe("ModeratorRuntime", () => {
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -197,6 +200,7 @@ describe("ModeratorRuntime", () => {
       const mcp = createMcpStub();
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -240,6 +244,7 @@ describe("ModeratorRuntime", () => {
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -353,6 +358,7 @@ describe("ModeratorRuntime", () => {
       const mcp = createMcpStub();
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -386,6 +392,7 @@ describe("ModeratorRuntime", () => {
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -420,6 +427,7 @@ describe("ModeratorRuntime", () => {
 
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -480,6 +488,7 @@ describe("ModeratorRuntime", () => {
       let iterations = 0;
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -850,6 +859,28 @@ describe("ModeratorRuntime", () => {
       } finally {
         errors.mockRestore();
       }
+    });
+  });
+
+  describe("system prompt", () => {
+    test("names the Scenario's topic so the Moderator can judge what is on-topic", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      llmCalls = [];
+      script = [assistant([classifyCall("active", "Agents are still trading new arguments")]), assistant()];
+
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        topic: TOPIC,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+      });
+      await runtime.runTurn();
+
+      const systemPrompt = llmCalls[0]?.find((m) => m.role === "system")?.content ?? "";
+      expect(systemPrompt).toContain(TOPIC);
     });
   });
 });
