@@ -946,6 +946,7 @@ describe("ModeratorRuntime", () => {
       ];
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
