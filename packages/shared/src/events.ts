@@ -98,6 +98,20 @@ export interface ModeratorClassificationEvent extends BaseEvent {
 }
 
 /**
+ * One tool call the Moderator made during an Assessment (reading the room,
+ * classifying, posting), so an Observer can reconstruct what it looked at
+ * before each verdict. `resultSummary` is a short, bounded description of the
+ * result (e.g. "3 messages" for a room read), never the full room contents.
+ * Run status and Transcript readers ignore it.
+ */
+export interface ModeratorToolCallEvent extends BaseEvent {
+  type: "moderator_tool_call";
+  tool: string;
+  args: Record<string, unknown>;
+  resultSummary: string;
+}
+
+/**
  * Recorded when the Moderator ends the Run after classifying the discussion STALE.
  * This is a terminal outcome distinct from wall-clock or budget backstops firing.
  */
@@ -119,6 +133,7 @@ export type AgoraEvent =
   | AgentTurnFailedEvent
   | AgentHeartbeatEvent
   | ModeratorClassificationEvent
+  | ModeratorToolCallEvent
   | RunCompletedByModeratorEvent;
 
 /**

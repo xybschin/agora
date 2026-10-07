@@ -173,6 +173,27 @@ export function buildModeratorTurnMessage(params: {
   return `${newMessages} new message${newMessages === 1 ? "" : "s"} since your last assessment. Read and reassess.`;
 }
 
+/** Upper bound on a logged tool result summary, so the event log never carries a room dump. */
+const TOOL_RESULT_SUMMARY_MAX_CHARS = 200;
+
+/**
+ * Summarises a tool result for the event log: a room read becomes its message
+ * count, anything else is truncated to a bounded length.
+ */
+function summarizeToolResult(tool: string, resultText: string): string {
+  if (tool === "matrix_read_room") {
+    try {
+      const parsed = JSON.parse(resultText) as unknown;
+      if (Array.isArray(parsed)) return `${parsed.length} message${parsed.length === 1 ? "" : "s"}`;
+    } catch {
+      // Not a message list (e.g. an error string); fall through to truncation.
+    }
+  }
+  return resultText.length > TOOL_RESULT_SUMMARY_MAX_CHARS
+    ? `${resultText.slice(0, TOOL_RESULT_SUMMARY_MAX_CHARS - 1)}…`
+    : resultText;
+}
+
 /**
  * Runs the Moderator's assessment loop: the model reads the room, classifies
  * the discussion, and — if STALE — posts a closing message.
@@ -221,6 +242,19 @@ export class ModeratorRuntime {
   }
 
   constructor(private readonly config: ModeratorRuntimeConfig) {}
+
+  /** Records one of the model's tool calls in the event log. */
+  private async recordToolCall(tool: string, args: Record<string, unknown>, resultText: string): Promise<void> {
+    const { logDir, runId } = this.config;
+    await appendEvent(logDir, runId, {
+      type: "moderator_tool_call",
+      runId,
+      tool,
+      args,
+      resultSummary: summarizeToolResult(tool, resultText),
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   /**
    * Runs the Moderator's assessment turn: reads the room, classifies the
@@ -325,6 +359,7 @@ export class ModeratorRuntime {
             resultText =
               "ERROR: You can only post a message after classifying the discussion as STALE. " +
               `Current classification is "${classification}". Do not call matrix_send_message.`;
+            await this.recordToolCall(call.function.name, args, resultText);
             messages.push({
               role: "tool",
               tool_call_id: call.id,
@@ -338,6 +373,7 @@ export class ModeratorRuntime {
           if (body.trim().length === 0) {
             resultText =
               "matrix_send_message rejected: 'content' must be a non-empty string. Provide your closing message.";
+            await this.recordToolCall(call.function.name, args, resultText);
             messages.push({
               role: "tool",
               tool_call_id: call.id,
@@ -368,9 +404,16 @@ export class ModeratorRuntime {
           }
         } else {
           // Other MCP tools (e.g. matrix_read_room for reading the discussion).
-          resultText = await mcp.callTool(call.function.name, args);
+          try {
+            resultText = await mcp.callTool(call.function.name, args);
+          } catch (err) {
+            // A failed read ends the Assessment; log it so the gap is visible.
+            await this.recordToolCall(call.function.name, args, `failed: ${String(err)}`);
+            throw err;
+          }
         }
 
+        await this.recordToolCall(call.function.name, args, resultText);
         messages.push({
           role: "tool",
           tool_call_id: call.id,
