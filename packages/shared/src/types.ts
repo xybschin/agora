@@ -64,8 +64,13 @@ export interface SamplingParams {
 export interface ScenarioConfig {
   name: string;
   topic: string;
-  /** Posted by the runner as a system/moderator message before agents are admitted. */
+  /** Posted by the runner, with the seed author's account, before any agent acts. */
   seedMessage: string;
+  /**
+   * Id of the roster agent whose account posts the seed. The Moderator reads it
+   * as another participant's message; the author reads it as its own.
+   */
+  seedAuthor: string;
   /** Wall-clock runtime limit in milliseconds. The Run ends when this limit is exceeded (wall-clock backstop). */
   maxRuntimeMs: number;
   /** Hard cap on tool-calling steps within a single agent's turn, to bound runaway loops. */

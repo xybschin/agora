@@ -17,6 +17,7 @@ const runtime = new AgentRuntime({
   logDir: env.logDir,
   mcp,
   llm: env.llm,
+  seedMessage: env.seedMessage,
 });
 
 // A minimal health endpoint only, so the runner's waitForHealth can probe

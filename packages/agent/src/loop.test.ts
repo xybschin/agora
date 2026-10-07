@@ -229,6 +229,23 @@ describe("AgentRuntime own message history", () => {
     expect(run2.getOwnMessageHistory()).toEqual([]);
   });
 
+  test("the seed author starts with the seed it posted as its own message", async () => {
+    // The runner posted the seed with this agent's account, so it is the
+    // agent's first message of the Run, and its first turn is told so.
+    script = [assistant()];
+    mcp.callTool = async () => "[]";
+
+    const runtime = makeRuntime({ seedMessage: "The floor is yours." });
+    expect(runtime.getOwnMessageHistory()).toEqual(["The floor is yours."]);
+
+    await runtime.runTurn();
+    expect(String(llmCalls.at(-1)?.[0]?.content)).toContain("> The floor is yours.");
+  });
+
+  test("an agent that did not author the seed starts with an empty queue", () => {
+    expect(makeRuntime().getOwnMessageHistory()).toEqual([]);
+  });
+
   test("the queue is bounded to the most recent posts, dropping the oldest", async () => {
     // Post four messages in one tick; the queue must keep only the last three
     // and forget the first (which is still visible in room history if read).

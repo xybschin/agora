@@ -140,6 +140,7 @@ function scenarioWith(agentIds: string[], observers?: string[]): ScenarioConfig 
     name: "remote-work-policy",
     topic: "Should remote work stay optional?",
     seedMessage: "The floor is yours.",
+    seedAuthor: agentIds[0] ?? "",
     maxRuntimeMs: 120000,
     maxToolStepsPerTurn: 6,
     budget: {},

@@ -89,7 +89,8 @@ Required fields, all enforced by `parseScenarioConfig`:
 | --- | --- | --- |
 | `name` | string | lowercase-kebab; also becomes `scenarios/<name>.yaml` |
 | `topic` | string | the situation being reacted to |
-| `seedMessage` | string | posted by the setup account before the discussion starts |
+| `seedMessage` | string | posted with the seed author's account before the discussion starts |
+| `seedAuthor` | string, an `agents[].id` | the roster agent who posts the seed and reads it as its own message; never the Moderator (the setup account) |
 | `maxRuntimeMs` | int > 0 | wall-clock runtime limit in ms (ADR-0008); the backstop if neither the agents nor the Moderator closes the Run |
 | `maxToolStepsPerTurn` | int > 0, default `6` | bounds runaway tool loops per agent per turn |
 | `budget.maxTotalTokens` | int > 0, optional | token cap for the run |

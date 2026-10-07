@@ -207,6 +207,7 @@ const scenario = {
   name: "remote-work-policy",
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
+  seedAuthor: "alex",
   maxRuntimeMs: 120000,
   budget: {},
   agents: [agent("alex"), agent("bri")],
@@ -289,6 +290,21 @@ describe("parseScenarioConfig", () => {
     expect(() =>
       parseScenarioConfig({ ...scenario, samplingParams: { maxTokens: 0 } }),
     ).toThrow();
+  });
+
+  test("rejects a Scenario that names no seed author", () => {
+    // The Seed message is posted with an agent's account, never the Moderator's,
+    // so a Scenario without an author has nobody to post it.
+    const { seedAuthor: _omitted, ...withoutAuthor } = scenario;
+    expect(() => parseScenarioConfig(withoutAuthor)).toThrow();
+  });
+
+  test("rejects a seed author that is not in the roster", () => {
+    // The author must actually take part in the discussion: an id outside the
+    // roster has no account in the room, so nobody could post the seed.
+    expect(() =>
+      parseScenarioConfig({ ...scenario, seedAuthor: "karen" }),
+    ).toThrow(/karen.+is not an agent in this Scenario's roster/);
   });
 
   test("accepts a partial samplingParams set", () => {

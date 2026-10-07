@@ -35,6 +35,12 @@ export interface AgentRuntimeConfig {
   turnRetry?: Partial<TurnRetryOptions>;
   /** How long to back off after a failed wait; see WaitBackoffOptions. Injected by tests. */
   waitBackoff?: Partial<WaitBackoffOptions>;
+  /**
+   * The Scenario's seed, set only when this agent is its seed author. The runner
+   * posted it with this agent's account before the Run began, so it opens the
+   * agent's Own message history like any message the agent sent itself.
+   */
+  seedMessage?: string;
 }
 
 export interface TurnResult {
@@ -187,6 +193,7 @@ export class AgentRuntime {
 
   constructor(private readonly config: AgentRuntimeConfig) {
     this.currentStance = config.agentDef.persona.initialStance;
+    if (config.seedMessage) this.ownMessageHistory.push(config.seedMessage);
   }
 
   getStance(): number {

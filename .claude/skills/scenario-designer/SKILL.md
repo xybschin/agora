@@ -43,7 +43,8 @@ would *manufacture* a phenomenon rather than *test* it.
 {
   "name": "lowercase-kebab",                 // also recapitalized into the file name
   "topic": "One-two sentence situation the room is reacting to.",
-  "seedMessage": "The setup-account post before the discussion starts — written as if from leadership. Neutral-ish bait.",
+  "seedMessage": "The opening post, written in the seed author's own voice (and signed as them, if signed). Neutral-ish bait.",
+  "seedAuthor": "lowercase-kebab",           // id of the roster agent who posts the seed — never the Moderator
   "maxRuntimeMs": 120000,
   "maxToolStepsPerTurn": 6,
   "budget": { "maxTotalTokens": 2000000 },
@@ -94,6 +95,13 @@ Rules of thumb that make phenomena *observable* rather than noise:
   is a target *by construction* — that manufactures the phenomenon instead of
   testing it. Give it an ally, or raise its assertiveness.
 - **Keep `initialStance` within [-1, 1]** — the validator enforces it.
+- **Pick a seed author who would plausibly post the seed.** The runner posts
+  `seedMessage` with the `seedAuthor` agent's account; the Moderator never
+  posts it. That agent takes part in the discussion and treats the seed as its
+  own message, so write the seed in its voice and match its persona (the team
+  lead announcing the meeting, the relative relaying the request). A seed signed
+  by someone outside the roster has no author to post it — re-voice it to an
+  agent in the cast instead. The schema rejects a missing or unknown author.
 
 ### 3. Validate and render
 Run `validate.mts` (above). It checks the schema **and** the design heuristics

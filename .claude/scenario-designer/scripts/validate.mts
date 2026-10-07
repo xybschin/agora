@@ -162,6 +162,7 @@ function renderYaml(c: ScenarioConfigLike): string {
     name: c.name,
     topic: c.topic,
     seedMessage: c.seedMessage,
+    seedAuthor: c.seedAuthor,
     maxRuntimeMs: c.maxRuntimeMs,
     maxToolStepsPerTurn: c.maxToolStepsPerTurn,
     budget: c.budget,
@@ -183,6 +184,7 @@ type ScenarioConfigLike = {
   name: string;
   topic: string;
   seedMessage: string;
+  seedAuthor: string;
   maxRuntimeMs: number;
   maxToolStepsPerTurn: number;
   budget: { maxTotalTokens?: number; maxTotalCostUsd?: number };

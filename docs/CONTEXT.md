@@ -10,7 +10,12 @@ with opinion polarization) can be observed and reviewed after the fact.
 A YAML definition (`scenarios/<name>.yaml`) describing a topic, seed message,
 tick/budget limits, and the roster of agents (with personas and initial
 stances) for a simulation. A Scenario has no conversation of its own — it's
-a template that produces a new conversation each time it's executed.
+a template that produces a new conversation each time it's executed. Its
+`seedAuthor` names the agent in the roster that posts the seed message: the
+runner posts it with that agent's account before any agent acts, so the
+author reads the seed as its own message (and it opens the author's **Own
+message history**) while everyone else, the Moderator included, reads it as
+another participant's.
 _Avoid_: Simulation config, experiment definition
 
 **Run**:
@@ -78,7 +83,8 @@ The setup account (also used for room creation and agent invites) joined
 to the room with display name "Moderator" as a silent, active participant.
 Unlike a Reader (who is read-only), a Moderator speaks exactly once per Run:
 when it decides the discussion is complete and ends the Run with a closing
-message. The Moderator is the only entity that can decide a Run is over
+message. It does not post the seed message — the Scenario's seed author
+does — so the Moderator posts nothing before its closing message. The Moderator is the only entity that can decide a Run is over
 (outside of budget overflow or operator cancellation). It is an agent in
 the sense of being always-active and participating in the room, but unlike
 the conversation agents it has no persona and no stance, and its only

@@ -14,6 +14,8 @@ export interface AgentEnvConfig {
   matrixUserId: string;
   llm: { baseUrl: string; apiKey: string; model: string; sampling?: ResolvedSampling };
   port: number;
+  /** The Scenario's seed, staged by the runner only for the seed author's container. */
+  seedMessage?: string;
 }
 
 function requireEnv(name: string): string {
@@ -60,5 +62,6 @@ export function loadAgentEnvConfig(): AgentEnvConfig {
       sampling: resolveSamplingParams(agentId, readMergedSampling()),
     },
     port: Number(process.env.PORT ?? 4000),
+    seedMessage: process.env.SEED_MESSAGE || undefined,
   };
 }

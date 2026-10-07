@@ -52,6 +52,7 @@ const scenario: ScenarioConfig = {
   name: "remote-work-policy",
   topic: "Should remote work stay optional?",
   seedMessage: "The floor is yours.",
+  seedAuthor: "bri",
   maxRuntimeMs: 120000,
   maxToolStepsPerTurn: 6,
   budget: {},
@@ -92,14 +93,14 @@ const credentials: CredentialsFile = {
 };
 
 describe("seedRoom", () => {
-  test("posts the Scenario's seed into the Run's room, as the setup user", async () => {
+  test("posts the Scenario's seed into the Run's room, as the seed author", async () => {
     const calls = stubHomeserver();
 
     await seedRoom({ scenario, credentials, roomId: "!run1:localhost" });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe("PUT");
-    expect(calls[0]?.authorization).toBe("Bearer syt_setup");
+    expect(calls[0]?.authorization).toBe("Bearer syt_bri");
     expect(calls[0]?.url).toMatch(
       /^http:\/\/localhost:8008\/_matrix\/client\/v3\/rooms\/!run1%3Alocalhost\/send\/m\.room\.message\/.+$/,
     );
@@ -107,6 +108,19 @@ describe("seedRoom", () => {
       msgtype: "m.text",
       body: "The floor is yours.",
     });
+  });
+
+  // The setup account is the Moderator. Were the seed posted with its token, the
+  // Moderator would read the seed as its own message -- a question it asked that
+  // nobody answered -- and the seed author would not recognize it as theirs.
+  test("never posts with the setup account, which is the Moderator", async () => {
+    const calls = stubHomeserver();
+
+    await seedRoom({ scenario, credentials, roomId: "!run4:localhost" });
+
+    expect(calls.some((call) => call.authorization === "Bearer syt_setup")).toBe(
+      false,
+    );
   });
 
   test("makes no read of the room first, because a Run's room is always new", async () => {
