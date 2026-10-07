@@ -9,9 +9,13 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 type ScriptedMessage = ChatMessage & { tool_calls?: ToolCall[] };
 
 let script: Array<ScriptedMessage> = [];
+// The messages of every chatCompletion call, so a test can read the turn
+// message the Moderator was given.
+let llmCalls: ChatMessage[][] = [];
 
 mock.module("./llm.js", () => ({
-  chatCompletion: async () => {
+  chatCompletion: async (_llm: unknown, messages: ChatMessage[]) => {
+    llmCalls.push([...messages]);
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
     return { message: next, usage: { promptTokens: 5, completionTokens: 5 } };
@@ -369,6 +373,138 @@ describe("ModeratorRuntime", () => {
 
       // Should have looped twice: once for ACTIVE, once for STALE+send.
       expect(waitCalls).toBe(2);
+    });
+
+    /**
+     * Drives runLoop against a scripted sequence of polls on a fake clock, so
+     * quiet-room timing is tested without sleeping. Each poll advances the clock
+     * by its own duration (a full 30s wait, or less when /sync returns early).
+     */
+    async function runQuietLoop(params: {
+      polls: Array<{ activity: boolean; durationMs: number }>;
+      quietReassessAfterMs: number;
+    }) {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      llmCalls = [];
+      let clock = 1_000_000;
+      let waitCalls = 0;
+      const mcp = createMcpStub();
+      mcp.waitForActivity = async () => {
+        const poll = params.polls[waitCalls] ?? { activity: false, durationMs: 30_000 };
+        waitCalls++;
+        clock += poll.durationMs;
+        return { hasActivity: poll.activity, nextBatch: `s${waitCalls}` };
+      };
+      let iterations = 0;
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 30_000,
+        quietReassessAfterMs: params.quietReassessAfterMs,
+        now: () => clock,
+        // Fail-safe so a regression hangs nothing: every scripted case ends the
+        // Run well before this.
+        isStopped: () => ++iterations > params.polls.length,
+      });
+      await runtime.runLoop();
+      const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const turnMessages = llmCalls
+        .map((call) => call.find((m) => m.role === "user")?.content ?? "")
+        // A turn's tool-calling steps repeat its turn message; keep one per turn.
+        .filter((msg, i, all) => i === 0 || msg !== all[i - 1]);
+      return { waitCalls, events, turnMessages };
+    }
+
+    const quiet = { activity: false, durationMs: 30_000 };
+    const active = { activity: true, durationMs: 5_000 };
+
+    test("a silent room is reassessed and can be ended STALE", async () => {
+      script = [
+        assistant([classifyCall("stale", "Nobody has posted for a while; the discussion has trailed off")]),
+        assistant([sendCall("The discussion has gone quiet. Closing the Run.")]),
+        assistant(),
+      ];
+
+      const { waitCalls, events, turnMessages } = await runQuietLoop({
+        polls: [quiet, quiet, quiet],
+        quietReassessAfterMs: 60_000,
+      });
+
+      // Reassessed once a minute of silence had passed, and that turn ended the Run.
+      expect(waitCalls).toBe(2);
+      expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+      expect(turnMessages[0]).toMatch(/quiet.*60 seconds/);
+    });
+
+    test("activity resets the quiet clock", async () => {
+      script = [
+        assistant([classifyCall("active", "New post just arrived")]),
+        assistant(),
+        assistant([classifyCall("stale", "Quiet since the last post")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+
+      // 60s of quiet does not reach the 90s threshold before activity arrives;
+      // that quiet must not carry over, so the next quiet turn comes only after
+      // three fresh quiet polls.
+      const { waitCalls, events } = await runQuietLoop({
+        polls: [quiet, quiet, active, quiet, quiet, quiet],
+        quietReassessAfterMs: 90_000,
+      });
+
+      expect(waitCalls).toBe(6);
+      const classifications = events
+        .filter((e) => e.type === "moderator_classification")
+        .map((e) => e.classification);
+      expect(classifications).toEqual(["active", "stale"]);
+    });
+
+    test("a pause judged ACTIVE is reassessed later with the full quiet time", async () => {
+      script = [
+        assistant([classifyCall("active", "Probably just a pause")]),
+        assistant(),
+        assistant([classifyCall("stale", "Two minutes without a post")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+
+      const { turnMessages } = await runQuietLoop({
+        polls: [quiet, quiet, quiet, quiet],
+        quietReassessAfterMs: 60_000,
+      });
+
+      // The second quiet turn reports the whole silence, not just the time since
+      // the first quiet turn, so a lasting silence reads as lasting.
+      expect(turnMessages).toHaveLength(2);
+      expect(turnMessages[0]).toMatch(/60 seconds/);
+      expect(turnMessages[1]).toMatch(/120 seconds/);
+    });
+
+    test("empty polls that return early do not trigger a reassessment too soon", async () => {
+      script = [
+        assistant([classifyCall("stale", "Quiet for a minute")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+
+      // /sync can come back empty after a second (presence, typing, receipts).
+      // Six of those are 6s of silence, not three minutes.
+      const early = { activity: false, durationMs: 1_000 };
+      const { waitCalls, turnMessages } = await runQuietLoop({
+        polls: [early, early, early, early, early, early, quiet, quiet],
+        quietReassessAfterMs: 60_000,
+      });
+
+      expect(waitCalls).toBe(8);
+      expect(turnMessages[0]).toMatch(/66 seconds/);
     });
   });
 });

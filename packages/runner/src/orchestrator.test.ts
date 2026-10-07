@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ScenarioConfig } from "@agora/shared";
 import { superviseRunToTerminal } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
+import { createModeratorWatch } from "./moderatorWatch.js";
 
 const dirs: string[] = [];
 
@@ -177,5 +178,65 @@ describe("superviseRunToTerminal", () => {
     // Verify budget tracked exactly 60 tokens (one reading of one event), not 120 (double-counted)
     const summary = budget.summary();
     expect(summary.totalTokens).toBe(60);
+  });
+
+  test("charges usage events from two writers with colliding seq values", async () => {
+    // Every container numbers its own events from 1, so seq repeats across a Run.
+    const logDir = freshLogDir();
+    const runId = "seq-collision-1";
+    const transcriptDir = join(logDir, runId);
+    Bun.spawnSync(["mkdir", "-p", transcriptDir]);
+
+    const timestamp = new Date().toISOString();
+    writeFileSync(
+      join(transcriptDir, "events.jsonl"),
+      [
+        { seq: 1, type: "usage", runId, agentId: "a1", promptTokens: 40, completionTokens: 20, timestamp },
+        { seq: 1, type: "usage", runId, agentId: "moderator", promptTokens: 30, completionTokens: 10, timestamp },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+
+    let checkCount = 0;
+    const budget = new BudgetTracker();
+    await superviseRunToTerminal({
+      runId,
+      scenario: makeScenario({ maxRuntimeMs: 60000 }),
+      logDir,
+      budget,
+      stopWhen: () => ++checkCount >= 3,
+    });
+
+    expect(budget.summary().totalTokens).toBe(100);
+  });
+
+  test("shows the Assessment that ended the Run to the operator, once", async () => {
+    const logDir = freshLogDir();
+    const runId = "assess-run-1";
+    const transcriptDir = join(logDir, runId);
+    Bun.spawnSync(["mkdir", "-p", transcriptDir]);
+
+    const timestamp = "2026-10-07T12:03:00.000Z";
+    writeFileSync(
+      join(transcriptDir, "events.jsonl"),
+      [
+        { seq: 1, type: "moderator_classification", runId, classification: "stale", rationale: "agents repeat themselves", timestamp },
+        { seq: 2, type: "moderator_ended_run", runId, rationale: "agents repeat themselves", messageId: "$end", timestamp },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+
+    const printed: string[] = [];
+    await superviseRunToTerminal({
+      runId,
+      scenario: makeScenario(),
+      logDir,
+      budget: new BudgetTracker(),
+      moderatorWatch: createModeratorWatch({ print: (line) => printed.push(line), warn: () => {} }),
+    });
+
+    expect(printed).toEqual(["[12:03:00 UTC] Moderator Assessment: STALE — agents repeat themselves"]);
   });
 });

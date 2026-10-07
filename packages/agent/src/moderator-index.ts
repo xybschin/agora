@@ -3,7 +3,7 @@ import { MatrixMcpClient } from "./mcpClient.js";
 import { ModeratorRuntime } from "./moderator.js";
 
 const env = loadModeratorEnvConfig();
-const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken, env.matrixSetupUserId);
+const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken);
 
 const runtime = new ModeratorRuntime({
   runId: env.runId,
