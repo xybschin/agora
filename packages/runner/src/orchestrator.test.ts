@@ -180,6 +180,37 @@ describe("superviseRunToTerminal", () => {
     expect(summary.totalTokens).toBe(60);
   });
 
+  test("charges usage events from two writers with colliding seq values", async () => {
+    // Every container numbers its own events from 1, so seq repeats across a Run.
+    const logDir = freshLogDir();
+    const runId = "seq-collision-1";
+    const transcriptDir = join(logDir, runId);
+    Bun.spawnSync(["mkdir", "-p", transcriptDir]);
+
+    const timestamp = new Date().toISOString();
+    writeFileSync(
+      join(transcriptDir, "events.jsonl"),
+      [
+        { seq: 1, type: "usage", runId, agentId: "a1", promptTokens: 40, completionTokens: 20, timestamp },
+        { seq: 1, type: "usage", runId, agentId: "moderator", promptTokens: 30, completionTokens: 10, timestamp },
+      ]
+        .map((e) => JSON.stringify(e))
+        .join("\n") + "\n",
+    );
+
+    let checkCount = 0;
+    const budget = new BudgetTracker();
+    await superviseRunToTerminal({
+      runId,
+      scenario: makeScenario({ maxRuntimeMs: 60000 }),
+      logDir,
+      budget,
+      stopWhen: () => ++checkCount >= 3,
+    });
+
+    expect(budget.summary().totalTokens).toBe(100);
+  });
+
   test("shows the Assessment that ended the Run to the operator, once", async () => {
     const logDir = freshLogDir();
     const runId = "assess-run-1";

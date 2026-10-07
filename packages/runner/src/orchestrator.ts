@@ -60,9 +60,12 @@ export async function superviseRunToTerminal(params: {
   const runtimeStartTime = Date.now();
   const transcriptPath = join(logDir, runId, "events.jsonl");
 
-  // Track which usage events we've already recorded in the budget, to avoid
-  // double-counting when we re-read the transcript multiple times.
-  const recordedUsageSeq = new Set<number>();
+  // How many transcript lines have already been charged to the budget, so a
+  // re-read never charges a usage event twice. Keyed by position, not seq:
+  // every container numbers its own events from 1, so seq repeats within a Run
+  // and deduping on it silently dropped real spend (agora-6s2.6). Position is
+  // safe because events.jsonl is append-only.
+  let chargedLines = 0;
 
   const pollIntervalMs = 500; // Poll transcript every 500ms
 
@@ -97,16 +100,16 @@ export async function superviseRunToTerminal(params: {
         }
       }
 
-      // Record any new usage events we haven't seen before.
-      for (const event of events) {
-        if (event.type === "usage" && !recordedUsageSeq.has(event.seq)) {
-          recordedUsageSeq.add(event.seq);
+      // Charge the usage events appended since the last read.
+      for (const event of events.slice(chargedLines)) {
+        if (event.type === "usage") {
           budget.record({
             promptTokens: event.promptTokens,
             completionTokens: event.completionTokens,
           });
         }
       }
+      chargedLines = Math.max(chargedLines, events.length);
 
       // Check for budget exceeded.
       if (budget.isExceeded()) {
