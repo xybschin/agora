@@ -262,6 +262,82 @@ describe("ModeratorRuntime", () => {
     });
   });
 
+  describe("tool-call log", () => {
+    test("records each tool call of an Assessment in order, with a bounded result summary", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+
+      script = [
+        assistant([readRoomCall()]),
+        assistant([classifyCall("active", "Three fresh arguments")]),
+        assistant(),
+      ];
+
+      const roomMessages = ["first argument", "second argument", "third argument"].map((content, i) => ({
+        id: `$e${i}`,
+        sender: "@agent:example.com",
+        content,
+      }));
+      const mcp = createMcpStub({ readRoomResult: JSON.stringify(roomMessages) });
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+      });
+
+      await runtime.runTurn();
+
+      const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const toolCalls = events.filter((e) => e.type === "moderator_tool_call");
+
+      expect(toolCalls.map((e) => e.tool)).toEqual(["matrix_read_room", "classify_discussion"]);
+      expect(toolCalls[0].args).toEqual({ limit: 100 });
+      expect(toolCalls[0].resultSummary).toBe("3 messages");
+      expect(toolCalls[1].args).toEqual({ classification: "active", rationale: "Three fresh arguments" });
+      expect(toolCalls[1].resultSummary).toBe("classification recorded: active");
+      // The read is logged before the verdict it informed.
+      const readSeq = toolCalls[0].seq;
+      const classificationSeq = events.find((e) => e.type === "moderator_classification").seq;
+      expect(readSeq).toBeLessThan(classificationSeq);
+    });
+
+    test("a rejected post is recorded with the rejection as its result", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+
+      script = [assistant([sendCall("Too early")]), assistant()];
+
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+      });
+
+      await runtime.runTurn();
+
+      const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      const toolCalls = events.filter((e) => e.type === "moderator_tool_call");
+
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0].tool).toBe("matrix_send_message");
+      expect(toolCalls[0].args).toEqual({ content: "Too early" });
+      expect(toolCalls[0].resultSummary).toMatch(/^ERROR: You can only post/);
+      expect(toolCalls[0].resultSummary.length).toBeLessThanOrEqual(200);
+    });
+  });
+
   describe("disagreement and conflict handling", () => {
     test("conflict/hostility in room content is classified ACTIVE", async () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));

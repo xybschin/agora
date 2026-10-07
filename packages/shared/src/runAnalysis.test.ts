@@ -158,6 +158,19 @@ describe("deriveRunStatus", () => {
     expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete" });
   });
 
+  test("ignores the Moderator's tool-call log", () => {
+    const toolCall: AgoraEvent = {
+      type: "moderator_tool_call",
+      runId: "r",
+      tool: "matrix_read_room",
+      args: { limit: 100 },
+      resultSummary: "3 messages",
+      timestamp: "t",
+    };
+    expect(deriveRunStatus([started(), toolCall], 1)).toEqual({ status: "incomplete" });
+    expect(deriveRunStatus([started(), toolCall, completed()], 1)).toEqual({ status: "completed" });
+  });
+
   test("is incomplete for an empty event list", () => {
     expect(deriveRunStatus([], 3)).toEqual({ status: "incomplete" });
   });
