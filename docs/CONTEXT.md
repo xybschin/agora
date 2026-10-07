@@ -81,12 +81,25 @@ when it decides the discussion is complete and ends the Run with a closing
 message. The Moderator is the only entity that can decide a Run is over
 (outside of budget overflow or operator cancellation). It is an agent in
 the sense of being always-active and participating in the room, but unlike
-the conversation agents it takes no LLM turns and makes only one choice per
-Run: when to close.
+the conversation agents it has no persona and no stance, and its only
+judgment is a series of **Assessments** — of which the first STALE one
+ends the Run.
 _Avoid_: Conflating with Reader (a Moderator actively participates and
 decides the Run's end; a Reader is silent and observes); conflating with
-the conversation agents (which take continuous turns driven by room
-activity; the Moderator takes no LLM turns, only decides completion)
+the conversation agents (which argue the topic; the Moderator only judges
+whether the discussion is still going)
+
+**Assessment**:
+One judgment by the Moderator of the discussion as a whole: a verdict of
+**ACTIVE** (still producing new arguments, shifting positions, or open
+disagreement) or **STALE** (repetitive, frozen, or disengaged), with a
+short rationale. A Run accumulates many Assessments; the first STALE one is
+the Moderator's decision to end it. Assessments are recorded in the event
+log and shown live to the operator running the Run, never posted to the
+room, so the agents cannot react to being judged.
+_Avoid_: Moderator stance (a **stance** is an agent's position on the
+topic; the Moderator has none), classification (names the event, not the
+concept), verdict (only one part of an Assessment)
 
 **Observer**:
 A human researcher reviewing a Run's transcript after it has finished, with
