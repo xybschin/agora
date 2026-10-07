@@ -22,6 +22,9 @@ import type { SamplingParams } from "@agora/shared";
  * once stripped of all sampling fields. Sampling is best-effort; a Run never
  * dies because a provider declined a penalty. If the stripped call still
  * fails, that genuine error is surfaced.
+ *
+ * Transient failures (429, 5xx, connection errors) are retried with jittered
+ * exponential backoff before either call gives up -- see `RetryOptions`.
  */
 
 export interface ChatMessage {
@@ -140,7 +143,9 @@ function getClient(config: LlmConfig): OpenAI {
   const key = `${baseURL}|${config.apiKey}`;
   let client = clients.get(key);
   if (!client) {
-    client = new OpenAI({ baseURL, apiKey: config.apiKey });
+    // The SDK's built-in retries are off: chatCompletion owns the retry policy
+    // (see RetryOptions), and stacking the two would multiply attempts.
+    client = new OpenAI({ baseURL, apiKey: config.apiKey, maxRetries: 0 });
     clients.set(key, client);
   }
   return client;
@@ -193,12 +198,104 @@ function isUnsupportedParameterError(error: unknown): boolean {
   return /parameter|argument|temperature|penalty|max_tokens|unrecognized|unknown/i.test(msg);
 }
 
+/**
+ * Bounds on retrying transient provider failures. A 429 ("No capacity
+ * available for this instance class"), a 5xx or a dropped connection is a
+ * provider blip, not a broken turn: chatCompletion waits and tries again
+ * rather than costing an agent or the Moderator its turn. Delays grow
+ * exponentially from `baseDelayMs`, each capped at `maxDelayMs`, with full
+ * jitter (the delay is scaled by `random()`) so a room of agents that all hit
+ * the same 429 doesn't retry in lockstep. Retrying stops at `maxAttempts`
+ * calls, or earlier once the next sleep would push the cumulative wait past
+ * `maxTotalWaitMs`; the last provider error is then surfaced. `sleep` and
+ * `random` exist so tests can drive the timing.
+ */
+export interface RetryOptions {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  maxTotalWaitMs: number;
+  sleep: (ms: number) => Promise<void>;
+  random: () => number;
+}
+
+const DEFAULT_RETRY: RetryOptions = {
+  maxAttempts: 8,
+  baseDelayMs: 1_000,
+  maxDelayMs: 30_000,
+  maxTotalWaitMs: 120_000,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  random: Math.random,
+};
+
+/**
+ * True for failures worth waiting out: rate limiting (429), server errors
+ * (5xx) and connection failures (the SDK's APIConnectionError, an APIError
+ * with no status). Every other 4xx is the request's fault and retrying it
+ * would only repeat the refusal.
+ */
+function isTransientError(error: unknown): boolean {
+  if (!(error instanceof OpenAI.APIError)) return false;
+  const status = error.status;
+  return status === undefined || status === 429 || status >= 500;
+}
+
+async function withRetry<T>(retry: RetryOptions, call: () => Promise<T>): Promise<T> {
+  let waited = 0;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await call();
+    } catch (error) {
+      if (!isTransientError(error) || attempt >= retry.maxAttempts) throw error;
+      const ceiling = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** (attempt - 1));
+      const delay = Math.round(ceiling * retry.random());
+      if (waited + delay > retry.maxTotalWaitMs) throw error;
+      waited += delay;
+      console.error(
+        `[LLM] Transient failure (${error instanceof Error ? error.message : String(error)}); ` +
+          `retry ${attempt}/${retry.maxAttempts - 1} in ${delay}ms`,
+      );
+      await retry.sleep(delay);
+    }
+  }
+}
+
+function toResult(response: OpenAI.Chat.ChatCompletion): ChatCompletionResult | undefined {
+  const choice = response.choices[0];
+  if (!choice) return undefined;
+
+  const message: ChatMessage = {
+    role: choice.message.role as "assistant",
+    content: choice.message.content,
+  };
+
+  if (choice.message.tool_calls) {
+    message.tool_calls = choice.message.tool_calls.map((tc: OpenAI.Chat.ChatCompletionMessageToolCall) => ({
+      id: tc.id,
+      type: "function" as const,
+      function: {
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      },
+    }));
+  }
+
+  return {
+    message,
+    usage: response.usage
+      ? { promptTokens: response.usage.prompt_tokens, completionTokens: response.usage.completion_tokens }
+      : undefined,
+  };
+}
+
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
   tools: ToolSpec[],
+  retryOverrides: Partial<RetryOptions> = {},
 ): Promise<ChatCompletionResult> {
   const client = getClient(config);
+  const retry = { ...DEFAULT_RETRY, ...retryOverrides };
 
   console.error(`[LLM] Sending request to ${config.baseUrl}`, {
     model: config.model,
@@ -208,37 +305,15 @@ export async function chatCompletion(
   });
 
   try {
-    const response = await client.chat.completions.create(
-      buildCreateParams(client, config, messages, tools, config.sampling),
+    const response = await withRetry(retry, () =>
+      client.chat.completions.create(buildCreateParams(client, config, messages, tools, config.sampling)),
     );
 
     console.error(`[LLM] Got response with ${response.choices.length} choice(s)`);
 
-    const choice = response.choices[0];
-    if (!choice) throw new Error("LLM response contained no choices");
-
-    const message: ChatMessage = {
-      role: choice.message.role as "assistant",
-      content: choice.message.content,
-    };
-
-    if (choice.message.tool_calls) {
-      message.tool_calls = choice.message.tool_calls.map((tc: OpenAI.Chat.ChatCompletionMessageToolCall) => ({
-        id: tc.id,
-        type: "function" as const,
-        function: {
-          name: tc.function.name,
-          arguments: tc.function.arguments,
-        },
-      }));
-    }
-
-    return {
-      message,
-      usage: response.usage
-        ? { promptTokens: response.usage.prompt_tokens, completionTokens: response.usage.completion_tokens }
-        : undefined,
-    };
+    const result = toResult(response);
+    if (!result) throw new Error("LLM response contained no choices");
+    return result;
   } catch (error) {
     // OpenRouter fallback: a provider that rejects a sampling parameter (most
     // commonly frequency_penalty/presence_penalty/max_tokens/temperature) must
@@ -249,26 +324,11 @@ export async function chatCompletion(
         `[LLM] Provider rejected sampling params (${error instanceof Error ? error.message : String(error)}); retrying without sampling`,
       );
       try {
-        const response = await client.chat.completions.create(
-          buildCreateParams(client, config, messages, tools, undefined),
+        const response = await withRetry(retry, () =>
+          client.chat.completions.create(buildCreateParams(client, config, messages, tools, undefined)),
         );
-        const choice = response.choices[0];
-        if (choice) {
-          const message: ChatMessage = { role: choice.message.role as "assistant", content: choice.message.content };
-          if (choice.message.tool_calls) {
-            message.tool_calls = choice.message.tool_calls.map((tc: OpenAI.Chat.ChatCompletionMessageToolCall) => ({
-              id: tc.id,
-              type: "function" as const,
-              function: { name: tc.function.name, arguments: tc.function.arguments },
-            }));
-          }
-          return {
-            message,
-            usage: response.usage
-              ? { promptTokens: response.usage.prompt_tokens, completionTokens: response.usage.completion_tokens }
-              : undefined,
-          };
-        }
+        const result = toResult(response);
+        if (result) return result;
       } catch (retryError) {
         const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
         console.error(`[LLM] Retry without sampling also failed: ${retryMsg}`);

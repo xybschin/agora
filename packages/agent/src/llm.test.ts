@@ -10,18 +10,31 @@ import type { SamplingParams } from "@agora/shared";
 let mockCreate: ((params: Record<string, unknown>) => unknown) | null = null;
 // The faked openai class, captured so tests can throw its APIError without an
 // await inside a non-async create callback.
-let OpenAIMock: { new (): unknown; APIError: new (msg: string, status: number) => Error } | undefined;
+let OpenAIMock:
+  | {
+      new (): unknown;
+      APIError: new (msg: string, status: number | undefined) => Error;
+      APIConnectionError: new (msg: string) => Error;
+    }
+  | undefined;
 
 mock.module("openai", () => {
   class FakeAPIError extends Error {
-    status: number;
-    constructor(message: string, status: number) {
+    status: number | undefined;
+    constructor(message: string, status: number | undefined) {
       super(message);
       this.status = status;
     }
   }
+  // The real SDK's connection error is an APIError with no status.
+  class FakeAPIConnectionError extends FakeAPIError {
+    constructor(message: string) {
+      super(message, undefined);
+    }
+  }
   class FakeOpenAI {
     static APIError = FakeAPIError;
+    static APIConnectionError = FakeAPIConnectionError;
     chat = {
       completions: {
         create: (params: Record<string, unknown>) => {
@@ -178,7 +191,7 @@ describe("chatCompletion fallback on unsupported parameters", () => {
     expect(result.message.content).toBe("sure, I can go");
   });
 
-  test("a non-parameter failure is surfaced, not retried", async () => {
+  test("an unexpected non-API failure is surfaced, not retried", async () => {
     mockCreate = () => {
       throw new Error("connection refused");
     };
@@ -186,5 +199,166 @@ describe("chatCompletion fallback on unsupported parameters", () => {
     await expect(
       chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/e`, sampling }, [], []),
     ).rejects.toThrow("Failed to reach LLM at");
+  });
+});
+
+describe("chatCompletion retry on transient failures", () => {
+  // Retry timing is injected: sleeps are recorded instead of awaited, and the
+  // jitter source is pinned so delays are deterministic.
+  let sleeps: number[];
+  const retry = (overrides: Record<string, unknown> = {}) => ({
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
+    random: () => 1,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    mockCreate = null;
+    sleeps = [];
+  });
+
+  test("recovers after a few 429s, backing off exponentially", async () => {
+    let calls = 0;
+    mockCreate = (params) => {
+      calls++;
+      if (calls <= 3) throw new OpenAIMock!.APIError("No capacity available for this instance class", 429);
+      return completion(params);
+    };
+
+    const result = await chatCompletion(
+      { ...BASE, baseUrl: `${BASE.baseUrl}/r1` },
+      [],
+      [],
+      retry({ baseDelayMs: 100, maxDelayMs: 10_000 }),
+    );
+
+    expect(result.message.content).toBe("sure, I can go");
+    expect(calls).toBe(4);
+    expect(sleeps).toEqual([100, 200, 400]);
+  });
+
+  test("jitter scales each delay by the random source", async () => {
+    let calls = 0;
+    mockCreate = (params) => {
+      calls++;
+      if (calls <= 2) throw new OpenAIMock!.APIError("busy", 429);
+      return completion(params);
+    };
+    await chatCompletion(
+      { ...BASE, baseUrl: `${BASE.baseUrl}/r2` },
+      [],
+      [],
+      retry({ baseDelayMs: 100, random: () => 0.5 }),
+    );
+    expect(sleeps).toEqual([50, 100]);
+  });
+
+  test("5xx and connection errors are retried too", async () => {
+    let calls = 0;
+    mockCreate = (params) => {
+      calls++;
+      if (calls === 1) throw new OpenAIMock!.APIError("bad gateway", 502);
+      if (calls === 2) throw new OpenAIMock!.APIConnectionError("Connection error.");
+      return completion(params);
+    };
+    const result = await chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/r3` }, [], [], retry());
+    expect(result.message.content).toBe("sure, I can go");
+    expect(calls).toBe(3);
+  });
+
+  test("gives up after maxAttempts and throws with the provider's message", async () => {
+    let calls = 0;
+    mockCreate = () => {
+      calls++;
+      throw new OpenAIMock!.APIError("No capacity available for this instance class", 429);
+    };
+    await expect(
+      chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/r4` }, [], [], retry({ maxAttempts: 4 })),
+    ).rejects.toThrow("No capacity available for this instance class");
+    expect(calls).toBe(4);
+    expect(sleeps).toHaveLength(3);
+  });
+
+  test("gives up once the next backoff would exceed the total wait budget", async () => {
+    let calls = 0;
+    mockCreate = () => {
+      calls++;
+      throw new OpenAIMock!.APIError("busy", 503);
+    };
+    // Delays would be 100, 200, 400, ...; a 350ms budget allows 100 + 200 only.
+    await expect(
+      chatCompletion(
+        { ...BASE, baseUrl: `${BASE.baseUrl}/r5` },
+        [],
+        [],
+        retry({ maxAttempts: 10, baseDelayMs: 100, maxTotalWaitMs: 350 }),
+      ),
+    ).rejects.toThrow("busy");
+    expect(sleeps).toEqual([100, 200]);
+    expect(calls).toBe(3);
+  });
+
+  test("each delay is capped at maxDelayMs", async () => {
+    let calls = 0;
+    mockCreate = (params) => {
+      calls++;
+      if (calls <= 4) throw new OpenAIMock!.APIError("busy", 429);
+      return completion(params);
+    };
+    await chatCompletion(
+      { ...BASE, baseUrl: `${BASE.baseUrl}/r6` },
+      [],
+      [],
+      retry({ baseDelayMs: 100, maxDelayMs: 250 }),
+    );
+    expect(sleeps).toEqual([100, 200, 250, 250]);
+  });
+
+  test("a 4xx other than 429 is not retried", async () => {
+    let calls = 0;
+    mockCreate = () => {
+      calls++;
+      throw new OpenAIMock!.APIError("invalid api key", 401);
+    };
+    await expect(
+      chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/r7` }, [], [], retry()),
+    ).rejects.toThrow("invalid api key");
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("a non-parameter 400 is not retried", async () => {
+    let calls = 0;
+    mockCreate = () => {
+      calls++;
+      throw new OpenAIMock!.APIError("messages: field required", 400);
+    };
+    await expect(
+      chatCompletion({ ...BASE, baseUrl: `${BASE.baseUrl}/r8` }, [], [], retry()),
+    ).rejects.toThrow("messages: field required");
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  test("the sampling-stripped fallback call is itself retried on a 429", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    mockCreate = (params) => {
+      calls.push(params);
+      if (calls.length === 1) throw new OpenAIMock!.APIError("'temperature' is not allowed for this model", 400);
+      if (calls.length === 2) throw new OpenAIMock!.APIError("busy", 429);
+      return completion(params);
+    };
+    const result = await chatCompletion(
+      { ...BASE, baseUrl: `${BASE.baseUrl}/r9`, sampling: resolveSamplingParams("alex") },
+      [],
+      [],
+      retry(),
+    );
+    expect(result.message.content).toBe("sure, I can go");
+    expect(calls).toHaveLength(3);
+    expect(calls[2]?.temperature).toBeUndefined();
+    expect(sleeps).toHaveLength(1);
   });
 });
