@@ -336,8 +336,10 @@ describe("ModeratorRuntime", () => {
 
       script = [
         assistant([classifyCall("active", "Still going")]),
+        assistant(),
         assistant([classifyCall("stale", "Now stale")]),
         assistant([sendCall("Done.")]),
+        assistant(),
       ];
 
       const runtime = new ModeratorRuntime({
@@ -386,6 +388,7 @@ describe("ModeratorRuntime", () => {
     async function runQuietLoop(params: {
       polls: Array<{ activity: boolean; durationMs: number }>;
       quietReassessAfterMs: number;
+      turnRetry?: Record<string, unknown>;
     }) {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       llmCalls = [];
@@ -412,6 +415,7 @@ describe("ModeratorRuntime", () => {
         // Fail-safe so a regression hangs nothing: every scripted case ends the
         // Run well before this.
         isStopped: () => ++iterations > params.polls.length,
+        turnRetry: params.turnRetry,
       });
       await runtime.runLoop();
       const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
@@ -510,24 +514,41 @@ describe("ModeratorRuntime", () => {
       expect(turnMessages[0]).toMatch(/66 seconds/);
     });
 
-    test("a failed Assessment is recorded in the transcript and the loop keeps waiting", async () => {
-      // Two activity wakes: the first Assessment's LLM call throws (provider out
-      // of capacity), the second classifies STALE and ends the Run -- proving
-      // the loop survived the failure.
+    /** Turn retry settings with a recording, non-blocking sleep. */
+    function fastTurnRetry(maxRetries: number) {
+      const sleeps: number[] = [];
+      const turnRetry = {
+        maxRetries,
+        baseDelayMs: 1_000,
+        maxDelayMs: 3_000,
+        sleep: async (ms: number) => {
+          sleeps.push(ms);
+        },
+      };
+      return { turnRetry, sleeps };
+    }
+
+    test("a failed Assessment is recorded and re-run after a backoff, without a new wake", async () => {
+      // One activity wake: the first Assessment's LLM call throws (provider out
+      // of capacity); the re-run classifies STALE and ends the Run without the
+      // room having to say anything new.
       script = [
         new Error("429 No capacity available"),
         assistant([classifyCall("stale", "Over")]),
         assistant([sendCall("Closing.")]),
         assistant(),
       ];
+      const { turnRetry, sleeps } = fastTurnRetry(3);
       const errors = spyOn(console, "error").mockImplementation(() => {});
       try {
         const { waitCalls, events } = await runQuietLoop({
-          polls: [active, active],
+          polls: [active],
           quietReassessAfterMs: 60_000,
+          turnRetry,
         });
 
-        expect(waitCalls).toBe(2);
+        expect(waitCalls).toBe(1);
+        expect(sleeps).toEqual([1_000]);
         const failed = events.filter((e) => e.type === "agent_turn_failed");
         expect(failed).toEqual([
           expect.objectContaining({
@@ -543,6 +564,131 @@ describe("ModeratorRuntime", () => {
         const logged = errors.mock.calls.map((args) => String(args[0]));
         expect(logged.some((line) => line.includes("turn 1 failed"))).toBe(true);
         expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(false);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("Assessment retries are capped; past the cap the loop resumes waiting", async () => {
+      // Two activity wakes: every attempt on the first wake fails, so the loop
+      // gives up and waits; the second wake's Assessment ends the Run.
+      script = [
+        new Error("429 No capacity available"),
+        new Error("429 No capacity available"),
+        assistant([classifyCall("stale", "Over")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+      const { turnRetry, sleeps } = fastTurnRetry(1);
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { waitCalls, events } = await runQuietLoop({
+          polls: [active, active],
+          quietReassessAfterMs: 60_000,
+          turnRetry,
+        });
+
+        expect(waitCalls).toBe(2);
+        expect(sleeps).toEqual([1_000]);
+        expect(events.filter((e) => e.type === "agent_turn_failed").map((e) => e.turn)).toEqual([1, 2]);
+        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("a failed Assessment that already posted its closing message is not re-run", async () => {
+      // The closing message lands; the follow-up LLM call then fails. Re-running
+      // would post a second closing message, so the loop goes back to waiting.
+      script = [
+        assistant([classifyCall("stale", "Over")]),
+        assistant([sendCall("Closing.")]),
+        new Error("503"),
+      ];
+      const { turnRetry, sleeps } = fastTurnRetry(3);
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { events } = await runQuietLoop({
+          polls: [active],
+          quietReassessAfterMs: 60_000,
+          turnRetry,
+        });
+
+        expect(events.filter((e) => e.type === "message")).toHaveLength(1);
+        expect(events.filter((e) => e.type === "agent_turn_failed")).toHaveLength(1);
+        expect(sleeps).toEqual([]);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("a re-run Assessment still reports the room activity that woke it", async () => {
+      // The first Assessment completes ACTIVE with 2 messages in the room. The
+      // next wake finds 5; that Assessment fails, and its re-run must still be
+      // told about the 3 new messages, not "No new messages" -- which would
+      // nudge the model towards STALE while the room is active.
+      script = [
+        assistant([classifyCall("active", "Going")]),
+        assistant(),
+        new Error("429 No capacity available"),
+        assistant([classifyCall("active", "Still going")]),
+        assistant(),
+      ];
+      llmCalls = [];
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      const mcp = createMcpStub();
+      let waitCalls = 0;
+      const room = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: `$m${i}` })));
+      mcp.waitForActivity = async () => {
+        waitCalls++;
+        mcp.callTool = async () => room(waitCalls === 1 ? 2 : 5);
+        return { hasActivity: true, nextBatch: `s${waitCalls}` };
+      };
+      const { turnRetry } = fastTurnRetry(3);
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+        isStopped: () => waitCalls >= 2,
+        turnRetry,
+      });
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runtime.runLoop();
+
+        const turnMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
+        expect(turnMessages[2]).toMatch(/^3 new messages/);
+        expect(turnMessages[3]).toMatch(/^3 new messages/);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("a retried quiet-room reassessment is still told how long the room was quiet", async () => {
+      script = [
+        new Error("503"),
+        assistant([classifyCall("stale", "Quiet")]),
+        assistant([sendCall("Closing.")]),
+        assistant(),
+      ];
+      const { turnRetry } = fastTurnRetry(3);
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const { events } = await runQuietLoop({
+          polls: [quiet, quiet],
+          quietReassessAfterMs: 60_000,
+          turnRetry,
+        });
+
+        // The failed attempt and the re-run each got the quiet-room message.
+        const userMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
+        expect(userMessages.length).toBeGreaterThanOrEqual(2);
+        for (const msg of userMessages) expect(msg).toMatch(/60 seconds/);
+        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
       } finally {
         errors.mockRestore();
       }

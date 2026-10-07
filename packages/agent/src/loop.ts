@@ -3,6 +3,7 @@ import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
+import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
 
 export interface AgentRuntimeConfig {
   runId: string;
@@ -29,6 +30,8 @@ export interface AgentRuntimeConfig {
    * loop and as the hook a graceful stop could use.
    */
   isStopped?: () => boolean;
+  /** How a failed turn is re-run; see TurnRetryOptions. Injected by tests. */
+  turnRetry?: Partial<TurnRetryOptions>;
 }
 
 export interface TurnResult {
@@ -132,12 +135,26 @@ export class AgentRuntime {
   private ownMessageHistory: string[] = [];
 
   /**
-   * The room's message count as of the last turn's start, as observed by the
-   * runtime's own light read (see countRoomMessages). The delta between this
-   * and the count at the current turn's start is what runTurn reports as "new
-   * since your last turn". Turn 1 has no prior turn, so it reports nothing new.
+   * The room's message count as of the last completed turn's start, as
+   * observed by the runtime's own light read (see countRoomMessages). The delta
+   * between this and the count at the current turn's start is what runTurn
+   * reports as "new since your last turn". Sealed only when a turn completes,
+   * so a turn re-run after a failure still sees the activity that woke it.
    */
   private lastTurnStartCount = 0;
+
+  /**
+   * Whether any turn has run to completion. Until one has, the agent is on its
+   * opening turn -- however many attempts that takes -- so it gets the opening
+   * prompt and reports nothing new.
+   */
+  private hasCompletedTurn = false;
+
+  /**
+   * Whether the current turn has posted to the room. A failed turn that
+   * already posted is not re-run, which would post twice.
+   */
+  private postedThisTurn = false;
 
   /**
    * Best-effort count of messages currently in the room, via one matrix_read_room
@@ -203,6 +220,7 @@ export class AgentRuntime {
 
     this.turn += 1;
     const turn = this.turn;
+    this.postedThisTurn = false;
     await appendEvent(logDir, runId, {
       type: "agent_turn_started",
       runId,
@@ -219,8 +237,9 @@ export class AgentRuntime {
     // count feeds newMessages below; an unreadable room silently yields
     // "nothing new" rather than failing the turn.
     const currentCount = await this.countRoomMessages();
-    const newMessages =
-      turn === 1 ? 0 : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
+    const newMessages = !this.hasCompletedTurn
+      ? 0
+      : Math.max(0, (currentCount ?? this.lastTurnStartCount) - this.lastTurnStartCount);
 
     const messages: ChatMessage[] = [
       {
@@ -229,7 +248,7 @@ export class AgentRuntime {
           persona: agentDef.persona,
           topic,
           currentStance: this.currentStance,
-          isFirstTick: turn === 1,
+          isFirstTick: !this.hasCompletedTurn,
           ownMessageHistory: this.ownMessageHistory,
         }),
       },
@@ -243,10 +262,6 @@ export class AgentRuntime {
       },
     ];
     this.lastTurnMessage = (messages[1] as { content: string }).content;
-    // Seal the count this turn started at, so the next turn reports exactly what
-    // arrived between turns. On a failed read keep the previous baseline (no
-    // news rather than an invented jump).
-    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
 
     let calledStanceTool = false;
     let totalPromptTokens = 0;
@@ -349,6 +364,7 @@ export class AgentRuntime {
               continue;
             }
             resultText = await mcp.callTool(call.function.name, { ...args, content: body });
+            this.postedThisTurn = true;
             try {
               const sent = JSON.parse(resultText) as { id: string; createdAt: string };
               await appendEvent(logDir, runId, {
@@ -400,6 +416,12 @@ export class AgentRuntime {
       });
     }
 
+    // Seal the count this turn started at, so the next turn reports exactly what
+    // arrived between turns. On a failed read keep the previous baseline (no
+    // news rather than an invented jump).
+    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
+    this.hasCompletedTurn = true;
+
     // Close the turn bracket. `turn_ended` is only reached when the turn runs to
     // completion — if runTurn throws part-way (a hard homeserver rejection of a
     // send, say) runLoop closes the bracket with `agent_turn_failed` instead. An
@@ -445,13 +467,16 @@ export class AgentRuntime {
    * wait, so a failed wait loses nothing and retries from the same position.
    *
    * A turn that throws is caught separately: it is recorded as
-   * `agent_turn_failed` (with the error) in the transcript and the loop goes
-   * back to waiting. Keeping the two catches apart means a failed turn is never
+   * `agent_turn_failed` (with the error) in the transcript and re-run after a
+   * backoff rather than dropped -- the activity that triggered it may be the
+   * only activity the room will ever see. Past the retry cap the loop goes back
+   * to waiting. Keeping the two catches apart means a failed turn is never
    * misreported as a failed wait.
    */
   async runLoop(): Promise<void> {
     const { runId, agentId, mcp } = this.config;
     const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
+    const turnRetry = { ...DEFAULT_TURN_RETRY, ...this.config.turnRetry };
     let since: string | undefined;
 
     for (;;) {
@@ -478,13 +503,11 @@ export class AgentRuntime {
       }
 
       if (!hasActivity) continue;
-      try {
-        await this.runTurn();
-      } catch (err) {
+      await runTurnWithRetry(agentId, turnRetry, () => this.runTurn(), async (err) => {
         // A turn that throws (an LLM call that outlasted its retries, a send the
         // homeserver rejected) closes its bracket with `agent_turn_failed` so
-        // the transcript says why the agent went quiet, then the loop waits on.
-        console.error(`[${agentId}] turn ${this.turn} failed; will resume waiting:`, err);
+        // the transcript says why the agent went quiet.
+        console.error(`[${agentId}] turn ${this.turn} failed:`, err);
         await appendEvent(this.config.logDir, runId, {
           type: "agent_turn_failed",
           runId,
@@ -493,7 +516,7 @@ export class AgentRuntime {
           error: err instanceof Error ? err.message : String(err),
           timestamp: new Date().toISOString(),
         });
-      }
+      }, () => !this.postedThisTurn);
     }
   }
 }

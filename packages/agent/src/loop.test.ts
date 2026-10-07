@@ -18,9 +18,13 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 type ScriptedMessage = ChatMessage & { tool_calls?: ToolCall[] };
 
 let script: Array<ScriptedMessage | Error> = [];
+// The messages of every chatCompletion call, so a test can read the prompts a
+// turn was given.
+let llmCalls: ChatMessage[][] = [];
 
 mock.module("./llm.js", () => ({
-  chatCompletion: async () => {
+  chatCompletion: async (_llm: unknown, messages: ChatMessage[]) => {
+    llmCalls.push([...messages]);
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
     if (next instanceof Error) throw next;
@@ -683,6 +687,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       hasActivity: boolean;
       nextBatch: string;
     }>,
+    overrides: Record<string, unknown> = {},
   ) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-runloop-"));
     let waited = 0;
@@ -697,6 +702,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       logDir,
       waitTimeoutMs: 100,
       isStopped: () => waited >= steps,
+      ...overrides,
     });
     await runtime.runLoop();
     const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
@@ -783,20 +789,41 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
     expect(waits.map((w) => w.since)).toEqual([undefined, undefined, "s2"]);
   });
 
-  test("a failed turn is recorded in the transcript and the loop keeps waiting", async () => {
-    // The provider is out of capacity: the turn's first LLM call throws. The
-    // transcript, not just stderr, must say why the agent went quiet, and the
-    // loop must survive to wait again.
-    script = [new Error("429 No capacity available")];
+  /** Turn retry settings with a recording, non-blocking sleep. */
+  function fastTurnRetry(maxRetries: number) {
+    const sleeps: number[] = [];
+    const turnRetry = {
+      maxRetries,
+      baseDelayMs: 1_000,
+      maxDelayMs: 3_000,
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+      },
+    };
+    return { turnRetry, sleeps };
+  }
+
+  test("a failed turn is re-run after a backoff, without waiting for new room activity", async () => {
+    // The provider is out of capacity on turn 1 (run abortion-policy-20261007-0937):
+    // in a fresh room nobody else will speak, so waiting for new activity would
+    // stall forever. The turn is re-run after a backoff instead, and posts.
+    script = [
+      new Error("429 No capacity available"),
+      assistant([sendCall("hello room"), stanceCall()]),
+      assistant(),
+    ];
+    const { turnRetry, sleeps } = fastTurnRetry(3);
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const { events, waits } = await runLoopOnce(2, async (n) =>
-        n === 1 ? { hasActivity: true, nextBatch: "s2" } : { hasActivity: false, nextBatch: "s3" },
+      const { events, waits } = await runLoopOnce(
+        1,
+        async () => ({ hasActivity: true, nextBatch: "s2" }),
+        { turnRetry },
       );
 
       const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
       expect(turns).toEqual([
-        expect.objectContaining({ type: "agent_turn_started", agentId: "alice", turn: 1 }),
+        expect.objectContaining({ type: "agent_turn_started", turn: 1 }),
         expect.objectContaining({
           type: "agent_turn_failed",
           runId: "scenario-test",
@@ -805,13 +832,136 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
           error: "429 No capacity available",
           timestamp: expect.any(String),
         }),
+        expect.objectContaining({ type: "agent_turn_started", turn: 2 }),
+        expect.objectContaining({ type: "agent_turn_ended", turn: 2 }),
       ]);
-      expect(waits.length).toBe(2);
+      expect(events.filter((e) => e.type === "message")).toHaveLength(1);
+      // The retry needed no second wake: one wait, one backoff.
+      expect(waits.length).toBe(1);
+      expect(sleeps).toEqual([1_000]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
 
-      // Logged as a turn failure, not misreported as a failed wait.
+  test("turn retries are capped; past the cap the failure is recorded and the loop resumes waiting", async () => {
+    // A persistently-down provider must not spin the agent forever: after the
+    // first attempt plus maxRetries re-runs, each recorded in the transcript
+    // (not just stderr), the loop goes back to waiting.
+    script = [new Error("429 No capacity available"), new Error("429 No capacity available"), new Error("503")];
+    const { turnRetry, sleeps } = fastTurnRetry(2);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events, waits } = await runLoopOnce(
+        2,
+        async (n) => (n === 1 ? { hasActivity: true, nextBatch: "s2" } : { hasActivity: false, nextBatch: "s3" }),
+        { turnRetry },
+      );
+
+      const turns = events.filter((e) => e.type.startsWith("agent_turn_"));
+      expect(turns.map((e) => [e.type, e.turn, e.error])).toEqual([
+        ["agent_turn_started", 1, undefined],
+        ["agent_turn_failed", 1, "429 No capacity available"],
+        ["agent_turn_started", 2, undefined],
+        ["agent_turn_failed", 2, "429 No capacity available"],
+        ["agent_turn_started", 3, undefined],
+        ["agent_turn_failed", 3, "503"],
+      ]);
+      // Backoff grows between retries; none is taken after the last attempt.
+      expect(sleeps).toEqual([1_000, 2_000]);
+      // The loop survived to wait again, resuming from the committed token.
+      expect(waits.map((w) => w.since)).toEqual([undefined, "s2"]);
+
+      // Logged as turn failures, not misreported as failed waits.
       const logged = errors.mock.calls.map((args) => String(args[0]));
       expect(logged.some((line) => line.includes("turn 1 failed"))).toBe(true);
       expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(false);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a re-run turn still reports the room activity that woke it", async () => {
+    // Turn 1 completes with 2 messages in the room. The next wake finds 5; that
+    // attempt fails, and its re-run must still report the 3 new messages rather
+    // than treat the failed attempt as having seen them.
+    script = [
+      assistant([stanceCall()]),
+      assistant(),
+      new Error("429 No capacity available"),
+      assistant([stanceCall()]),
+      assistant(),
+    ];
+    llmCalls = [];
+    const { turnRetry } = fastTurnRetry(3);
+    const room = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: `$m${i}` })));
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runLoopOnce(
+        2,
+        async (n) => {
+          mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : room(n === 1 ? 2 : 5));
+          return { hasActivity: true, nextBatch: `s${n + 1}` };
+        },
+        { turnRetry },
+      );
+
+      const turnMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
+      expect(turnMessages[0]).toMatch(/^Turn 1\. Nothing new/);
+      expect(turnMessages[2]).toMatch(/^Turn 2\. 3 new messages/);
+      expect(turnMessages[3]).toMatch(/^Turn 3\. 3 new messages/);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a re-run opening turn is still the opening turn", async () => {
+    script = [new Error("429 No capacity available"), assistant([stanceCall()]), assistant()];
+    llmCalls = [];
+    const { turnRetry } = fastTurnRetry(3);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runLoopOnce(1, async () => ({ hasActivity: true, nextBatch: "s2" }), { turnRetry });
+
+      const [failed, retried] = llmCalls;
+      expect(retried![1]!.content).toMatch(/Nothing new since your last turn/);
+      // The opening system prompt is the same on the re-run as on the failed attempt.
+      expect(retried![0]!.content).toBe(failed![0]!.content);
+      expect(retried![0]!.content).toMatch(/you started at/);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a failed turn that already posted is not re-run, so nothing is posted twice", async () => {
+    // The send lands; the follow-up LLM call then fails. Re-running the turn
+    // would post a second message, so the loop goes back to waiting instead.
+    script = [assistant([sendCall("hello room")]), new Error("503")];
+    const { turnRetry, sleeps } = fastTurnRetry(3);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events } = await runLoopOnce(1, async () => ({ hasActivity: true, nextBatch: "s2" }), {
+        turnRetry,
+      });
+
+      expect(events.filter((e) => e.type === "message")).toHaveLength(1);
+      expect(events.filter((e) => e.type.startsWith("agent_turn_")).map((e) => e.type)).toEqual([
+        "agent_turn_started",
+        "agent_turn_failed",
+      ]);
+      expect(sleeps).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("the turn backoff is capped at maxDelayMs", async () => {
+    script = Array.from({ length: 5 }, () => new Error("503"));
+    const { turnRetry, sleeps } = fastTurnRetry(4);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runLoopOnce(1, async () => ({ hasActivity: true, nextBatch: "s2" }), { turnRetry });
+      expect(sleeps).toEqual([1_000, 2_000, 3_000, 3_000]);
     } finally {
       errors.mockRestore();
     }

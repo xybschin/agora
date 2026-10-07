@@ -1,6 +1,7 @@
 import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
+import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
 
 export interface ModeratorRuntimeConfig {
   runId: string;
@@ -31,6 +32,8 @@ export interface ModeratorRuntimeConfig {
    * returns true the loop returns cleanly.
    */
   isStopped?: () => boolean;
+  /** How a failed Assessment is re-run; see TurnRetryOptions. Injected by tests. */
+  turnRetry?: Partial<TurnRetryOptions>;
 }
 
 export interface ModeratorTurnResult {
@@ -126,10 +129,18 @@ function buildModeratorTurnMessage(newMessages: number, quietForMs?: number): st
  */
 export class ModeratorRuntime {
   /**
-   * The room's message count as of the last turn's start, used to compute
-   * "new since last assessment" for the turn message.
+   * The room's message count as of the last completed turn's start, used to
+   * compute "new since last assessment" for the turn message. Sealed only when
+   * an Assessment completes, so one re-run after a failure still sees the
+   * activity that woke it.
    */
   private lastTurnStartCount = 0;
+
+  /**
+   * Whether the current Assessment has posted its closing message. A failed
+   * Assessment that already posted is not re-run, which would post twice.
+   */
+  private postedThisTurn = false;
 
   /**
    * Monotonic count of the Moderator's Assessments in this Run, starting at 1.
@@ -164,6 +175,7 @@ export class ModeratorRuntime {
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
     const { runId, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
     this.turn += 1;
+    this.postedThisTurn = false;
 
     await appendEvent(logDir, runId, {
       type: "agent_heartbeat",
@@ -192,8 +204,6 @@ export class ModeratorRuntime {
         content: buildModeratorTurnMessage(newMessages, opts?.quietForMs),
       },
     ];
-
-    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
 
     let classification: "active" | "stale" = "active";
     let rationale = "";
@@ -267,6 +277,7 @@ export class ModeratorRuntime {
           }
 
           resultText = await mcp.callTool(call.function.name, { ...args, content: body });
+          this.postedThisTurn = true;
           try {
             const sent = JSON.parse(resultText) as { id: string; createdAt: string };
             closingMessageId = sent.id;
@@ -297,6 +308,8 @@ export class ModeratorRuntime {
         });
       }
     }
+
+    this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
 
     // Record the "Moderator ended Run" event only if STALE and we posted.
     if (classification === "stale" && closingMessageId) {
@@ -330,13 +343,15 @@ export class ModeratorRuntime {
    *
    * A failed wait is logged and re-waited from the same `since`; a failed
    * Assessment is caught separately and recorded as `agent_turn_failed`, so the
-   * two failure modes stay distinguishable.
+   * two failure modes stay distinguishable, then re-run after a backoff (with
+   * the same quiet-room context) up to the retry cap before the loop waits on.
    */
   async runLoop(): Promise<void> {
     const { runId, mcp } = this.config;
     const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
     const quietReassessAfterMs = this.config.quietReassessAfterMs ?? 60_000;
     const now = this.config.now ?? Date.now;
+    const turnRetry = { ...DEFAULT_TURN_RETRY, ...this.config.turnRetry };
     let since: string | undefined;
     // Silence is measured from the last room activity; reassessment during a
     // silence is paced from the last assessment, so a pause judged ACTIVE is
@@ -376,16 +391,10 @@ export class ModeratorRuntime {
         continue;
       }
 
-      try {
-        const result = await this.runTurn(opts);
-        if (result.shouldEnd) {
-          // Moderator classified STALE and posted; end the Run.
-          return;
-        }
-      } catch (err) {
+      const result = await runTurnWithRetry("moderator", turnRetry, () => this.runTurn(opts), async (err) => {
         // A failed Assessment is recorded so the transcript says why the
-        // Moderator went quiet; the loop then waits for the next wake.
-        console.error(`[moderator] turn ${this.turn} failed; will resume waiting:`, err);
+        // Moderator went quiet.
+        console.error(`[moderator] turn ${this.turn} failed:`, err);
         await appendEvent(this.config.logDir, runId, {
           type: "agent_turn_failed",
           runId,
@@ -394,7 +403,9 @@ export class ModeratorRuntime {
           error: err instanceof Error ? err.message : String(err),
           timestamp: new Date().toISOString(),
         });
-      }
+      }, () => !this.postedThisTurn);
+      // Moderator classified STALE and posted; end the Run.
+      if (result?.shouldEnd) return;
     }
   }
 }
