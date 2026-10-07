@@ -712,6 +712,7 @@ describe("ModeratorRuntime", () => {
         llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
         waitTimeoutMs: 100,
         isStopped: () => waitCalls >= 2,
+        waitBackoff: { sleep: async () => {} },
       });
       const errors = spyOn(console, "error").mockImplementation(() => {});
       try {
@@ -723,6 +724,53 @@ describe("ModeratorRuntime", () => {
         expect(events.filter((e) => e.type === "agent_turn_failed")).toHaveLength(0);
         const logged = errors.mock.calls.map((args) => String(args[0]));
         expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(true);
+      } finally {
+        errors.mockRestore();
+      }
+    });
+
+    test("consecutive wait failures back off, growing to a cap, and a success resets it", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      const mcp = createMcpStub();
+      const sinces: Array<string | undefined> = [];
+      mcp.waitForActivity = async (args) => {
+        sinces.push(args.since);
+        const n = sinces.length;
+        if (n <= 6) throw new Error("ConnectionRefused");
+        if (n === 7) return { hasActivity: false, nextBatch: "s2" };
+        if (n === 8) throw new Error("ConnectionRefused");
+        return { hasActivity: false, nextBatch: "s3" };
+      };
+      const sleeps: number[] = [];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+        quietReassessAfterMs: Number.POSITIVE_INFINITY,
+        isStopped: () => sinces.length >= 9,
+        waitBackoff: {
+          baseDelayMs: 250,
+          maxDelayMs: 2_000,
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+        },
+      });
+      const errors = spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await runtime.runLoop();
+        const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        expect(sleeps).toEqual([250, 500, 1_000, 2_000, 2_000, 2_000, 250]);
+        expect(events.filter((e) => e.type === "agent_heartbeat")).toHaveLength(sinces.length);
+        // The token only advances on a successful wait.
+        expect(sinces).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined, "s2", "s2"]);
       } finally {
         errors.mockRestore();
       }

@@ -702,6 +702,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       logDir,
       waitTimeoutMs: 100,
       isStopped: () => waited >= steps,
+      waitBackoff: { sleep: async () => {} },
       ...overrides,
     });
     await runtime.runLoop();
@@ -962,6 +963,58 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
     try {
       await runLoopOnce(1, async () => ({ hasActivity: true, nextBatch: "s2" }), { turnRetry });
       expect(sleeps).toEqual([1_000, 2_000, 3_000, 3_000]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("consecutive wait failures back off, growing to a cap, and a success resets it", async () => {
+    // mcp_server is still starting: the first polls are refused. Without a
+    // backoff the loop re-polled immediately and wrote ~240 heartbeats in half a
+    // second. The injected sleep advances a virtual clock, so the poll times
+    // below are what real time would show.
+    let clock = 0;
+    const sleeps: number[] = [];
+    const pollTimes: number[] = [];
+    const waitBackoff = {
+      baseDelayMs: 250,
+      maxDelayMs: 2_000,
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+    };
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events, waits } = await runLoopOnce(
+        23,
+        async (n) => {
+          pollTimes.push(clock);
+          if (n <= 20) throw new Error("ConnectionRefused");
+          if (n === 21) return { hasActivity: false, nextBatch: "s2" };
+          if (n === 22) throw new Error("ConnectionRefused");
+          return { hasActivity: false, nextBatch: "s3" };
+        },
+        { waitBackoff },
+      );
+
+      // Delays double from the base up to the cap; the success after the 20th
+      // failure resets them, so the next failure waits the base delay again.
+      expect(sleeps).toEqual([
+        250, 500, 1_000, ...Array.from({ length: 17 }, () => 2_000),
+        250,
+      ]);
+      // Heartbeats stay bounded: one per poll, and only a handful of polls in
+      // the first second rather than hundreds.
+      const heartbeats = events.filter((e) => e.type === "agent_heartbeat");
+      expect(heartbeats).toHaveLength(waits.length);
+      expect(pollTimes.filter((t) => t < 1_000)).toHaveLength(3);
+      // The token only advances on a successful wait.
+      expect(waits.map((w) => w.since)).toEqual([
+        ...Array.from({ length: 21 }, () => undefined),
+        "s2",
+        "s2",
+      ]);
     } finally {
       errors.mockRestore();
     }

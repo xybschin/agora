@@ -4,6 +4,7 @@ import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from 
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
+import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from "./waitBackoff.js";
 
 export interface AgentRuntimeConfig {
   runId: string;
@@ -32,6 +33,8 @@ export interface AgentRuntimeConfig {
   isStopped?: () => boolean;
   /** How a failed turn is re-run; see TurnRetryOptions. Injected by tests. */
   turnRetry?: Partial<TurnRetryOptions>;
+  /** How long to back off after a failed wait; see WaitBackoffOptions. Injected by tests. */
+  waitBackoff?: Partial<WaitBackoffOptions>;
 }
 
 export interface TurnResult {
@@ -463,8 +466,10 @@ export class AgentRuntime {
    *
    * A transient failure *waiting* (a dropped connection, a homeserver hiccup)
    * must never crash the process or end the Run: it is caught, logged, and the
-   * loop resumes waiting. The `since` token is only advanced on a successful
-   * wait, so a failed wait loses nothing and retries from the same position.
+   * loop resumes waiting after a growing backoff (reset by the next successful
+   * wait), so a homeserver or mcp_server that is not up yet is not hammered.
+   * The `since` token is only advanced on a successful wait, so a failed wait
+   * loses nothing and retries from the same position.
    *
    * A turn that throws is caught separately: it is recorded as
    * `agent_turn_failed` (with the error) in the transcript and re-run after a
@@ -477,7 +482,9 @@ export class AgentRuntime {
     const { runId, agentId, mcp } = this.config;
     const timeoutMs = this.config.waitTimeoutMs ?? matrixWaitForActivityTimeoutMs;
     const turnRetry = { ...DEFAULT_TURN_RETRY, ...this.config.turnRetry };
+    const waitBackoff = { ...DEFAULT_WAIT_BACKOFF, ...this.config.waitBackoff };
     let since: string | undefined;
+    let waitFailures = 0;
 
     for (;;) {
       if (this.config.isStopped?.()) return;
@@ -495,10 +502,13 @@ export class AgentRuntime {
         const result = await mcp.waitForActivity({ timeoutMs, since });
         since = result.nextBatch;
         hasActivity = result.hasActivity;
+        waitFailures = 0;
       } catch (err) {
         // A dropped long-poll is transient: log and resume waiting rather than
         // letting the agent process die (which would end its half of the Run).
-        console.error(`[${agentId}] waiting for room activity failed; will resume waiting:`, err);
+        const delay = waitBackoffDelay(waitBackoff, ++waitFailures);
+        console.error(`[${agentId}] waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
+        await waitBackoff.sleep(delay);
         continue;
       }
 

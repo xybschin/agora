@@ -2,6 +2,7 @@ import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
+import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from "./waitBackoff.js";
 
 export interface ModeratorRuntimeConfig {
   runId: string;
@@ -34,6 +35,8 @@ export interface ModeratorRuntimeConfig {
   isStopped?: () => boolean;
   /** How a failed Assessment is re-run; see TurnRetryOptions. Injected by tests. */
   turnRetry?: Partial<TurnRetryOptions>;
+  /** How long to back off after a failed wait; see WaitBackoffOptions. Injected by tests. */
+  waitBackoff?: Partial<WaitBackoffOptions>;
 }
 
 export interface ModeratorTurnResult {
@@ -341,7 +344,8 @@ export class ModeratorRuntime {
    *
    * While waiting, emits an agent_heartbeat to provide liveness evidence.
    *
-   * A failed wait is logged and re-waited from the same `since`; a failed
+   * A failed wait is logged and re-waited from the same `since` after a
+   * growing backoff (reset by the next successful wait); a failed
    * Assessment is caught separately and recorded as `agent_turn_failed`, so the
    * two failure modes stay distinguishable, then re-run after a backoff (with
    * the same quiet-room context) up to the retry cap before the loop waits on.
@@ -352,7 +356,9 @@ export class ModeratorRuntime {
     const quietReassessAfterMs = this.config.quietReassessAfterMs ?? 60_000;
     const now = this.config.now ?? Date.now;
     const turnRetry = { ...DEFAULT_TURN_RETRY, ...this.config.turnRetry };
+    const waitBackoff = { ...DEFAULT_WAIT_BACKOFF, ...this.config.waitBackoff };
     let since: string | undefined;
+    let waitFailures = 0;
     // Silence is measured from the last room activity; reassessment during a
     // silence is paced from the last assessment, so a pause judged ACTIVE is
     // looked at again later with the full quiet time.
@@ -375,8 +381,11 @@ export class ModeratorRuntime {
         const result = await mcp.waitForActivity({ timeoutMs, since });
         since = result.nextBatch;
         hasActivity = result.hasActivity;
+        waitFailures = 0;
       } catch (err) {
-        console.error("[moderator] waiting for room activity failed; will resume waiting:", err);
+        const delay = waitBackoffDelay(waitBackoff, ++waitFailures);
+        console.error(`[moderator] waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
+        await waitBackoff.sleep(delay);
         continue;
       }
 
