@@ -282,6 +282,7 @@ describe("ModeratorRuntime", () => {
     function newRuntime(logDir: string) {
       return new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -732,6 +733,7 @@ describe("ModeratorRuntime", () => {
       const { turnRetry } = fastTurnRetry(3);
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -790,6 +792,7 @@ describe("ModeratorRuntime", () => {
       };
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
@@ -829,6 +832,7 @@ describe("ModeratorRuntime", () => {
       const sleeps: number[] = [];
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
+        topic: TOPIC,
         roomId: ROOM_ID,
         matrixSetupUserId: SETUP_USER_ID,
         logDir,
