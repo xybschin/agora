@@ -290,4 +290,50 @@ describe("generateComposeFile", () => {
       "She needs $$600, not $$HOME.",
     );
   });
+
+  // docker compose interpolates `$name` and `${...}` in every environment value,
+  // and refuses `$600` outright. Scenario free text reaches the containers in
+  // more places than the seed, so every value is escaped; decoding `$$` the way
+  // compose does must give back the original text.
+  test("escapes dollar signs in every env value so compose hands back the original text", () => {
+    const topic = "Is $600 rent fair when ${HOME} costs more?";
+    const flavorText = "Pays $600 a month; quotes ${HOME} and $USER.";
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario: {
+        ...scenario,
+        topic,
+        agents: scenario.agents.map((a) => ({
+          ...a,
+          persona: { ...a.persona, flavorText },
+        })),
+      },
+      credentials,
+    });
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    const decode = (v: string | undefined) => v?.replace(/\$\$/g, "$");
+
+    for (const [name, svc] of Object.entries(services)) {
+      for (const [key, value] of Object.entries(svc.environment)) {
+        // Every `$` left in the file must be an escaped pair, or compose would
+        // read it as the start of a variable.
+        expect({ name, key, value: value.replace(/\$\$/g, "") }).toEqual({
+          name,
+          key,
+          value: expect.not.stringContaining("$"),
+        });
+      }
+    }
+    for (const agentId of ["alex", "bri"]) {
+      const env = services[`agent_${agentId}`]!.environment;
+      expect(decode(env["SCENARIO_TOPIC"])).toBe(topic);
+      expect(
+        JSON.parse(decode(env["AGENT_DEFINITION_JSON"])!).persona.flavorText,
+      ).toBe(flavorText);
+    }
+    expect(decode(services["moderator"]!.environment["SCENARIO_TOPIC"])).toBe(topic);
+  });
 });

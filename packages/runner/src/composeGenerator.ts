@@ -86,11 +86,7 @@ export function generateComposeFile(params: {
         // The seed author posted the seed with its own account, so the seed
         // opens its Own message history. Nobody else is told: to them it is
         // another participant's message, read from the room like any other.
-        // Escaped because seeds quote prices ("$600"), which compose would
-        // otherwise try to interpolate as variables and refuse.
-        ...(agent.id === scenario.seedAuthor
-          ? { SEED_MESSAGE: escapeComposeInterpolation(scenario.seedMessage) }
-          : {}),
+        ...(agent.id === scenario.seedAuthor ? { SEED_MESSAGE: scenario.seedMessage } : {}),
         PORT: "4000",
       },
     };
@@ -139,6 +135,20 @@ export function generateComposeFile(params: {
       LLM_MODEL: credentials.agents[scenario.agents[0]?.id || ""]?.llmModel || "test",
     },
   };
+
+  // Every environment value is meant literally -- none relies on compose
+  // interpolation -- and several carry Scenario free text (topic, persona,
+  // seed) that quotes prices like "$600", which compose would otherwise read
+  // as a variable and refuse. Escaping all of them in one place means a new
+  // free-text value cannot be added without it.
+  for (const service of Object.values(services) as { environment: Record<string, string> }[]) {
+    service.environment = Object.fromEntries(
+      Object.entries(service.environment).map(([key, value]) => [
+        key,
+        escapeComposeInterpolation(value),
+      ]),
+    );
+  }
 
   const compose = { services, networks };
   return { yamlText: yaml.dump(compose), agentPorts };
