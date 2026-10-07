@@ -12,6 +12,10 @@ function heartbeat(seq: number, agentId: string): SequencedEvent {
   return { seq, type: "agent_heartbeat", runId, agentId, state: "waiting", timestamp: "2026-10-07T12:00:00.000Z" };
 }
 
+function turnFailed(seq: number, agentId: string, turn: number, error: string, timestamp: string): SequencedEvent {
+  return { seq, type: "agent_turn_failed", runId, agentId, turn, error, timestamp };
+}
+
 function makeWatch(start = 0) {
   let clock = start;
   const printed: string[] = [];
@@ -71,6 +75,35 @@ describe("createModeratorWatch", () => {
 
     expect(printed).toHaveLength(2);
     expect(printed[1]).toContain("second");
+  });
+
+  test("prints each failed turn, an agent's or the Moderator's, with its agent, turn and error", () => {
+    const { watch, printed } = makeWatch();
+
+    watch.observe([
+      heartbeat(1, "agent-a"),
+      turnFailed(2, "agent-a", 1, "429 No capacity available", "2026-10-07T09:37:12.000Z"),
+      turnFailed(3, "moderator", 1, "503 Service Unavailable", "2026-10-07T09:37:40.000Z"),
+    ]);
+
+    expect(printed).toEqual([
+      "[09:37:12 UTC] Turn failed: agent-a turn 1 — 429 No capacity available",
+      "[09:37:40 UTC] Turn failed: moderator turn 1 — 503 Service Unavailable",
+    ]);
+  });
+
+  test("prints each failed turn once across polls, even when two share a seq", () => {
+    const { watch, printed } = makeWatch();
+    const first = turnFailed(4, "agent-a", 1, "429", "2026-10-07T09:37:12.000Z");
+
+    watch.observe([first]);
+    watch.observe([first]);
+    watch.observe([first, turnFailed(4, "agent-b", 1, "429", "2026-10-07T09:37:13.000Z")]);
+
+    expect(printed).toEqual([
+      "[09:37:12 UTC] Turn failed: agent-a turn 1 — 429",
+      "[09:37:13 UTC] Turn failed: agent-b turn 1 — 429",
+    ]);
   });
 
   test("warns once when the Moderator has written nothing for 60s", () => {

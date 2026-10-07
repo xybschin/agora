@@ -35,8 +35,9 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
  * The runner's job is to detect when the Run reaches one of these four terminal
  * conditions and return control to the caller to write the terminal event and tear down.
  *
- * While it supervises, it also shows the operator each Moderator Assessment as it
- * lands and warns if the Moderator goes quiet (see `createModeratorWatch`).
+ * While it supervises, it also shows the operator each Moderator Assessment and
+ * each failed turn as it lands, and warns if the Moderator goes quiet (see
+ * `createModeratorWatch`).
  *
  * `stopWhen` is checked periodically while supervising (not just at intervals):
  * a cancel is recorded as `cancelled` when detected, and control returns to the caller

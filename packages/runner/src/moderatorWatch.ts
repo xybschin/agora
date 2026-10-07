@@ -17,7 +17,9 @@ export interface ModeratorWatchDeps {
 /**
  * Shows the operator the Moderator's Assessments live, as they land in the
  * transcript, and warns once per silence when the Moderator itself goes quiet
- * (agora-6s2.2). The terminal is the only surface: Assessments are never posted
+ * (agora-6s2.2). Failed turns, an agent's or the Moderator's, are printed the
+ * same way (agora-5su.5), so a Run stalled by e.g. a provider 429 is visible
+ * without reading the transcript afterwards. The terminal is the only surface: Assessments are never posted
  * to the room, so the agents cannot react to being judged (ADR-0008).
  *
  * `observe` is handed the whole transcript on every poll. What has been seen is
@@ -40,6 +42,9 @@ export function createModeratorWatch(deps: ModeratorWatchDeps = {}) {
     for (const event of events.slice(seen)) {
       if (event.type === "moderator_classification") {
         print(formatAssessment(event.timestamp, event.classification, event.rationale));
+      }
+      if (event.type === "agent_turn_failed") {
+        print(`[${formatTime(event.timestamp)}] Turn failed: ${event.agentId} turn ${event.turn} — ${event.error}`);
       }
       if (isFromModerator(event)) {
         lastHeardAt = now();
@@ -69,8 +74,11 @@ function isFromModerator(event: SequencedEvent): boolean {
 }
 
 function formatAssessment(timestamp: string, classification: "active" | "stale", rationale: string): string {
+  return `[${formatTime(timestamp)}] Moderator Assessment: ${classification.toUpperCase()} — ${rationale}`;
+}
+
+function formatTime(timestamp: string): string {
   const at = new Date(timestamp);
   // An unparseable timestamp is shown as written rather than crashing supervision.
-  const time = Number.isNaN(at.getTime()) ? timestamp : `${at.toISOString().slice(11, 19)} UTC`;
-  return `[${time}] Moderator Assessment: ${classification.toUpperCase()} — ${rationale}`;
+  return Number.isNaN(at.getTime()) ? timestamp : `${at.toISOString().slice(11, 19)} UTC`;
 }
