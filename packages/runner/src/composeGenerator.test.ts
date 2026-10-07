@@ -121,6 +121,23 @@ describe("generateComposeFile", () => {
     }
   });
 
+  test("hands the Moderator the Scenario's topic, as agents get it", () => {
+    // The Moderator judges whether new arguments are on-topic and substantive,
+    // which it cannot do without knowing what the topic is.
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+
+    expect(services["moderator"]?.environment["SCENARIO_TOPIC"]).toBe(scenario.topic);
+  });
+
   test("gives a declared Reader no container, no credentials and no tick", () => {
     // A Reader is a human in the room, not a member of the population: it is
     // deliberately not in the roster, so nothing here can grow a service for it.

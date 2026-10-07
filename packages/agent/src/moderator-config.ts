@@ -3,6 +3,7 @@ import type { SamplingParams } from "@agora/shared";
 
 export interface ModeratorEnvConfig {
   runId: string;
+  topic: string;
   roomId: string;
   matrixSetupUserId: string;
   matrixAccessToken: string;
@@ -30,6 +31,7 @@ export function loadModeratorEnvConfig(): ModeratorEnvConfig {
   const model = requireEnv("LLM_MODEL");
   return {
     runId: requireEnv("RUN_ID"),
+    topic: requireEnv("SCENARIO_TOPIC"),
     roomId: requireEnv("MATRIX_ROOM_ID"),
     matrixSetupUserId: requireEnv("MATRIX_SETUP_USER_ID"),
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),

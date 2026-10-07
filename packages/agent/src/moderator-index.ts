@@ -7,6 +7,7 @@ const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken);
 
 const runtime = new ModeratorRuntime({
   runId: env.runId,
+  topic: env.topic,
   roomId: env.roomId,
   matrixSetupUserId: env.matrixSetupUserId,
   logDir: env.logDir,
