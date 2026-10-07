@@ -6,7 +6,9 @@ import type { ToolSpec } from "./llm.js";
 /**
  * Thin wrapper around the MCP client that authenticates every connection
  * with this agent's own Matrix access token (Q7: identity bound to the
- * session, never passed as a tool argument).
+ * session, never passed as a tool argument). The token is the only identity
+ * sent: the server resolves who the caller is from it (GET /account/whoami),
+ * so there is no user-id header for a client to assert (agora-2ja).
  */
 export class MatrixMcpClient {
   private readonly client: Client;
@@ -15,7 +17,6 @@ export class MatrixMcpClient {
   constructor(
     private readonly mcpUrl: string,
     private readonly accessToken: string,
-    private readonly matrixUserId: string,
   ) {
     this.client = new Client({ name: "agora-agent", version: "0.1.0" });
   }
@@ -24,10 +25,7 @@ export class MatrixMcpClient {
     if (this.connected) return;
     const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), {
       requestInit: {
-        headers: {
-          Authorization: `Bearer ${this.accessToken}`,
-          "X-Matrix-User-ID": this.matrixUserId,
-        }
+        headers: { Authorization: `Bearer ${this.accessToken}` },
       },
       fetch: fetch,
     });
