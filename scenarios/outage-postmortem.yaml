@@ -12,7 +12,7 @@ seedMessage: >-
   or is this really a problem with how we page people? Post where you land, and
   why.
 seedAuthor: eli
-maxRuntimeMs: 30000
+maxRuntimeMs: 600000
 maxToolStepsPerTurn: 6
 budget:
   maxTotalTokens: 2000000

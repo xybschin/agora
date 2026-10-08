@@ -14,7 +14,7 @@ seedMessage: >-
   driving and the money myself, so it's in your hands to work out before
   Friday. Please keep this in the family. — Devon
 seedAuthor: devon
-maxRuntimeMs: 200000
+maxRuntimeMs: 600000
 maxToolStepsPerTurn: 10
 budget:
   maxTotalTokens: 2000000

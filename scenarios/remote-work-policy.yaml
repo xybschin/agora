@@ -6,7 +6,7 @@ seedMessage: >
   Hey everyone -- leadership wants our take before the Friday all-hands.
   Full RTO five days a week, yes or no? Curious where people land and why.
 seedAuthor: fara
-maxRuntimeMs: 25000
+maxRuntimeMs: 600000
 maxToolStepsPerTurn: 6
 budget:
   maxTotalTokens: 2000000
