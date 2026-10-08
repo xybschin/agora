@@ -249,6 +249,50 @@ describe("generateComposeFile", () => {
     ]);
   });
 
+  test("gives the Moderator the Scenario's samplingParams, not a credential override", () => {
+    // The Moderator borrows the first roster agent's credentials, but that
+    // agent's sampling override is a choice about that agent's voice, so the
+    // Moderator gets only the Run-wide Scenario sampling.
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario: {
+        ...scenario,
+        samplingParams: { maxTokens: 120, temperature: 1.1 },
+      },
+      credentials: {
+        ...credentials,
+        agents: {
+          ...credentials.agents,
+          alex: { ...credentials.agents.alex!, sampling: { maxTokens: 400, temperature: 1.4 } },
+        },
+      },
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    expect(JSON.parse(services["moderator"]!.environment["LLM_SAMPLING_JSON"]!)).toEqual({
+      maxTokens: 120,
+      temperature: 1.1,
+    });
+  });
+
+  test("gives the Moderator an explicit log directory on its logs mount", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string>; volumes: string[] }>;
+    }).services;
+    expect(services["moderator"]!.volumes).toContain("../logs:/logs");
+    expect(services["moderator"]!.environment["LOG_DIR"]).toBe("/logs");
+  });
+
   test("emits no LLM_SAMPLING_JSON when neither source sets sampling", () => {
     const { yamlText } = generateComposeFile({
       runId: "remote-work-policy-1759000000000",

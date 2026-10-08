@@ -6,8 +6,8 @@
  * transcript and reports `budget_exceeded`
  * on the first poll where it is over; `index.ts` then records `run_aborted`.
  * Because spend is only seen after the fact, a Run can overshoot by whatever
- * lands between two polls. Only spend recorded as `usage` events counts: the
- * Moderator's LLM calls write none today, so they are not charged.
+ * lands between two polls. Only spend recorded as `usage` events counts,
+ * whoever wrote them: agents and the Moderator alike.
  */
 export class BudgetTracker {
   /** `maxTotalTokens` counts prompt plus completion tokens; leaving it unset means no limit. */

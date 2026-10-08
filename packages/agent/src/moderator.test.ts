@@ -20,6 +20,10 @@ let script: Array<ScriptedMessage | Error> = [];
 // The messages of every chatCompletion call, so a test can read the turn
 // message the Moderator was given.
 let llmCalls: ChatMessage[][] = [];
+// What each chatCompletion call reports as its token usage; undefined stands in
+// for a provider that returns none.
+const DEFAULT_LLM_USAGE = { promptTokens: 5, completionTokens: 5 };
+let llmUsage: { promptTokens: number; completionTokens: number } | undefined = DEFAULT_LLM_USAGE;
 
 mock.module("./llm.js", () => ({
   chatCompletion: async (_llm: unknown, messages: ChatMessage[]) => {
@@ -27,7 +31,7 @@ mock.module("./llm.js", () => ({
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
     if (next instanceof Error) throw next;
-    return { message: next, usage: { promptTokens: 5, completionTokens: 5 } };
+    return { message: next, usage: llmUsage };
   },
 }));
 
@@ -341,6 +345,63 @@ describe("ModeratorRuntime", () => {
       expect(toolCalls[0].args).toEqual({ content: "Too early" });
       expect(toolCalls[0].resultSummary).toMatch(/^ERROR: You can only post/);
       expect(toolCalls[0].resultSummary.length).toBeLessThanOrEqual(200);
+    });
+  });
+
+  describe("usage", () => {
+    async function runOneAssessment(): Promise<Array<Record<string, unknown>>> {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      script = [
+        assistant([readRoomCall()]),
+        assistant([classifyCall("active", "Fresh arguments")]),
+        assistant(),
+      ];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        topic: TOPIC,
+        roomId: ROOM_ID,
+        matrixSetupUserId: SETUP_USER_ID,
+        logDir,
+        mcp: createMcpStub() as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+        waitTimeoutMs: 100,
+      });
+      await runtime.runTurn();
+      return (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    }
+
+    test("each LLM call of an Assessment records a usage event attributed to the Moderator", async () => {
+      llmUsage = { promptTokens: 120, completionTokens: 30 };
+      try {
+        const events = await runOneAssessment();
+        const usage = events.filter((e) => e.type === "usage");
+
+        // Three scripted replies, three calls, three usage events.
+        expect(usage).toHaveLength(3);
+        for (const event of usage) {
+          expect(event).toMatchObject({
+            runId: RUN_ID,
+            agentId: "moderator",
+            promptTokens: 120,
+            completionTokens: 30,
+          });
+        }
+      } finally {
+        llmUsage = DEFAULT_LLM_USAGE;
+      }
+    });
+
+    test("a call whose provider reports no usage records no usage event", async () => {
+      llmUsage = undefined;
+      try {
+        const events = await runOneAssessment();
+        expect(events.filter((e) => e.type === "usage")).toHaveLength(0);
+      } finally {
+        llmUsage = DEFAULT_LLM_USAGE;
+      }
     });
   });
 

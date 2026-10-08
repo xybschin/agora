@@ -14,6 +14,7 @@ import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from 
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
+import { recordUsage } from "./usage.js";
 import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from "./waitBackoff.js";
 
 export interface AgentRuntimeConfig {
@@ -307,15 +308,8 @@ export class AgentRuntime {
       if (usage) {
         totalPromptTokens += usage.promptTokens;
         totalCompletionTokens += usage.completionTokens;
-        await appendEvent(logDir, runId, {
-          type: "usage",
-          runId,
-          agentId,
-          promptTokens: usage.promptTokens,
-          completionTokens: usage.completionTokens,
-          timestamp: new Date().toISOString(),
-        });
       }
+      await recordUsage(logDir, runId, agentId, usage);
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
         break;
