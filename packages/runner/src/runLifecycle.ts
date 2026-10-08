@@ -130,10 +130,11 @@ export function createRunLifecycle(deps: RunLifecycleDeps) {
    * `recordTerminal`. Returns false when the run is no longer active (already
    * closed out by a concurrent signal or a previous call).
    *
-   * `moderatorEnded` writes the runner's own `moderator_ended_run`. The
-   * Moderator's container has already appended one (that is what supervision
-   * detected), so a completed transcript carries two; this one is the runner's
-   * claim on the terminal event. Nothing writes `run_completed` any more.
+   * `moderatorEnded` writes `moderator_ended_run`, the only one in the
+   * transcript: the Moderator's container signals its decision with the
+   * non-terminal `moderator_closing_posted` (that is what supervision
+   * detected) and leaves the terminal event to the runner. Nothing writes
+   * `run_completed` any more.
    */
   async function recordOutcome(runId: string, outcome: RunOutcome): Promise<boolean> {
     switch (outcome.type) {

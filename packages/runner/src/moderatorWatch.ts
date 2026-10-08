@@ -80,7 +80,7 @@ export type ModeratorWatch = ReturnType<typeof createModeratorWatch>;
 
 /** Any event the Moderator's container wrote; all of them count as proof of life. */
 function isFromModerator(event: SequencedEvent): boolean {
-  if (event.type === "moderator_classification" || event.type === "moderator_ended_run") return true;
+  if (event.type === "moderator_classification" || event.type === "moderator_closing_posted") return true;
   return "agentId" in event && event.agentId === "moderator";
 }
 

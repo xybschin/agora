@@ -184,9 +184,16 @@ describe("ModeratorRuntime", () => {
       expect(messageEvent).toBeDefined();
       expect(messageEvent?.content).toBe(closingMessage);
 
-      const endEvent = events.find((e) => e.type === "moderator_ended_run");
+      const endEvent = events.find((e) => e.type === "moderator_closing_posted");
       expect(endEvent).toBeDefined();
       expect(endEvent?.messageId).toBe("event_msg_1");
+      expect(endEvent?.rationale).toBe("Arguments are now repeating without new additions");
+
+      // The runner owns the terminal event (ADR-0005); the Moderator only signals.
+      const terminal = events.filter((e) =>
+        ["moderator_ended_run", "run_completed", "run_aborted"].includes(e.type),
+      );
+      expect(terminal).toHaveLength(0);
     });
   });
 
@@ -470,7 +477,7 @@ describe("ModeratorRuntime", () => {
       const events = await readEvents(logDir);
       expect(events.filter((e) => e.type === "moderator_classification")).toHaveLength(0);
       expect(events.filter((e) => e.type === "message")).toHaveLength(0);
-      expect(events.filter((e) => e.type === "moderator_ended_run")).toHaveLength(0);
+      expect(events.filter((e) => e.type === "moderator_closing_posted")).toHaveLength(0);
     });
   });
 
@@ -655,7 +662,7 @@ describe("ModeratorRuntime", () => {
 
       // Reassessed once a minute of silence had passed, and that turn ended the Run.
       expect(waitCalls).toBe(2);
-      expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+      expect(events.find((e) => e.type === "moderator_closing_posted")).toBeDefined();
       expect(turnMessages[0]).toMatch(/quiet.*60 seconds/);
     });
 
@@ -768,7 +775,7 @@ describe("ModeratorRuntime", () => {
             timestamp: expect.any(String),
           }),
         ]);
-        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+        expect(events.find((e) => e.type === "moderator_closing_posted")).toBeDefined();
 
         const logged = errors.mock.calls.map((args) => String(args[0]));
         expect(logged.some((line) => line.includes("turn 1 failed"))).toBe(true);
@@ -800,7 +807,7 @@ describe("ModeratorRuntime", () => {
         expect(waitCalls).toBe(2);
         expect(sleeps).toEqual([1_000]);
         expect(events.filter((e) => e.type === "agent_turn_failed").map((e) => e.turn)).toEqual([1, 2]);
-        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+        expect(events.find((e) => e.type === "moderator_closing_posted")).toBeDefined();
       } finally {
         errors.mockRestore();
       }
@@ -897,7 +904,7 @@ describe("ModeratorRuntime", () => {
         const userMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
         expect(userMessages.length).toBeGreaterThanOrEqual(2);
         for (const msg of userMessages) expect(msg).toMatch(/60 seconds/);
-        expect(events.find((e) => e.type === "moderator_ended_run")).toBeDefined();
+        expect(events.find((e) => e.type === "moderator_closing_posted")).toBeDefined();
       } finally {
         errors.mockRestore();
       }
@@ -1313,7 +1320,7 @@ describe("ModeratorRuntime", () => {
       const classifications = events.filter((e) => e.type === "moderator_classification");
       expect(classifications.map((e) => e.classification)).toEqual(["active"]);
       expect(events.some((e) => e.type === "message")).toBe(false);
-      expect(events.some((e) => e.type === "moderator_ended_run")).toBe(false);
+      expect(events.some((e) => e.type === "moderator_closing_posted")).toBe(false);
     });
 
     test("is accepted once every agent has posted, and the Run ends", async () => {
@@ -1324,7 +1331,7 @@ describe("ModeratorRuntime", () => {
       expect(result).toEqual({ classification: "stale", shouldEnd: true });
       const classifications = events.filter((e) => e.type === "moderator_classification");
       expect(classifications.map((e) => e.classification)).toEqual(["stale"]);
-      expect(events.some((e) => e.type === "moderator_ended_run")).toBe(true);
+      expect(events.some((e) => e.type === "moderator_closing_posted")).toBe(true);
     });
   });
 });

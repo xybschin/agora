@@ -4,9 +4,10 @@
  * the room has stayed quiet long enough) runs one Assessment: an LLM tool loop
  * that reads the room and calls `classify_discussion` with ACTIVE or STALE.
  * Only a STALE Assessment may post, and that post is the Moderator's single
- * closing message; recording `moderator_ended_run` after it is what the runner
- * treats as a completed Run. Assessments go to the event log only, never to
- * the room, so the agents cannot react to being judged.
+ * closing message; recording `moderator_closing_posted` after it is what the
+ * runner treats as a completed Run, and the runner, not the Moderator, then
+ * writes the terminal `moderator_ended_run`. Assessments go to the event log
+ * only, never to the room, so the agents cannot react to being judged.
  *
  * Unlike ADR-0008's original sketch, the Moderator does make LLM calls: the
  * Assessment itself is the model's judgment, constrained by the gates below.
@@ -387,7 +388,7 @@ export class ModeratorRuntime {
    *
    * Side effects: posts to the room (STALE only) and appends `agent_heartbeat`,
    * a `usage` per LLM call, `moderator_tool_call`, `moderator_classification`,
-   * `message` and `moderator_ended_run` events to the Run's event log. Throws when the LLM
+   * `message` and `moderator_closing_posted` events to the Run's event log. Throws when the LLM
    * call or a room read fails, or when the post's response cannot be parsed;
    * runLoop records and retries those.
    */
@@ -581,11 +582,11 @@ export class ModeratorRuntime {
       );
     }
 
-    // Only a posted closing message ends the Run; the runner watches for this
-    // event to record the Run as completed.
+    // Only a posted closing message ends the Run. This signals the decision;
+    // the runner watches for it and writes the terminal moderator_ended_run.
     if (classification === "stale" && closingMessageId) {
       await appendEvent(logDir, runId, {
-        type: "moderator_ended_run",
+        type: "moderator_closing_posted",
         runId,
         rationale,
         messageId: closingMessageId,

@@ -45,8 +45,9 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
 /**
  * Polls the transcript until the Run reaches one of four terminal outcomes and
  * returns it, without writing anything:
- * 1. `moderator_ended` — the Moderator appended `moderator_ended_run` (the
- *    normal, successful end);
+ * 1. `moderator_ended` — the Moderator appended `moderator_closing_posted`
+ *    (the normal, successful end; the caller then records the terminal
+ *    `moderator_ended_run`);
  * 2. `wall_clock_exceeded` — more than `scenario.maxRuntimeMs` has passed since
  *    this call began (the safety backstop);
  * 3. `budget_exceeded` — charged `usage` events put `budget` over its limit;
@@ -107,7 +108,7 @@ export async function superviseRunToTerminal(params: {
       moderatorWatch.observe(events);
 
       for (const event of events) {
-        if (event.type === "moderator_ended_run") {
+        if (event.type === "moderator_closing_posted") {
           return {
             outcome: "moderator_ended",
             rationale: event.rationale,

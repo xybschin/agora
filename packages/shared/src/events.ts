@@ -142,9 +142,23 @@ export interface ModeratorToolCallEvent extends BaseEvent {
 }
 
 /**
+ * Not terminal: the Moderator's decision to end the Run. Written by the
+ * Moderator's container once a STALE Assessment has posted its closing message;
+ * the runner watches for it and records the Run's one terminal event,
+ * `moderator_ended_run` (ADR-0005: the runner owns the terminal event).
+ * `rationale` is the STALE Assessment's.
+ */
+export interface ModeratorClosingPostedEvent extends BaseEvent {
+  type: "moderator_closing_posted";
+  rationale: string;
+  messageId: string; // The Matrix event id of the Moderator's closing message
+}
+
+/**
  * Terminal: the Moderator ended the Run after a STALE Assessment and posted its
  * closing message. This is the normal way a Run completes, distinct from the
- * wall-clock and budget backstops, which record `run_aborted`.
+ * wall-clock and budget backstops, which record `run_aborted`. Written only by
+ * the runner, on seeing `moderator_closing_posted`, so a Run carries exactly one.
  */
 export interface RunCompletedByModeratorEvent extends BaseEvent {
   type: "moderator_ended_run";
@@ -165,6 +179,7 @@ export type AgoraEvent =
   | AgentHeartbeatEvent
   | ModeratorClassificationEvent
   | ModeratorToolCallEvent
+  | ModeratorClosingPostedEvent
   | RunCompletedByModeratorEvent;
 
 /**
