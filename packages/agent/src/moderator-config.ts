@@ -29,7 +29,11 @@ function requireEnv(name: string): string {
   return value;
 }
 
-/** Optional sampling overrides from `LLM_SAMPLING_JSON`; throws on malformed JSON. */
+/**
+ * Optional sampling overrides from `LLM_SAMPLING_JSON`: the Scenario's
+ * Run-wide `samplingParams` only (no credential override, see the runner's
+ * composeGenerator). Throws on malformed JSON.
+ */
 function readMergedSampling(): SamplingParams | undefined {
   const raw = process.env.LLM_SAMPLING_JSON;
   if (!raw) return undefined;

@@ -20,6 +20,7 @@ import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from 
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
 import { readTurnsInFlight } from "./turnsInFlight.js";
+import { recordUsage } from "./usage.js";
 import { DEFAULT_WAIT_BACKOFF, waitBackoffDelay, type WaitBackoffOptions } from "./waitBackoff.js";
 
 export interface ModeratorRuntimeConfig {
@@ -385,8 +386,8 @@ export class ModeratorRuntime {
    * activity.
    *
    * Side effects: posts to the room (STALE only) and appends `agent_heartbeat`,
-   * `moderator_tool_call`, `moderator_classification`, `message` and
-   * `moderator_ended_run` events to the Run's event log. Throws when the LLM
+   * a `usage` per LLM call, `moderator_tool_call`, `moderator_classification`,
+   * `message` and `moderator_ended_run` events to the Run's event log. Throws when the LLM
    * call or a room read fails, or when the post's response cannot be parsed;
    * runLoop records and retries those.
    */
@@ -442,8 +443,10 @@ export class ModeratorRuntime {
     // against runaway tool calling; the Assessment ends early as soon as the
     // model replies without tool calls.
     for (let step = 0; step < 10; step++) {
-      const { message } = await chatCompletion(llm, messages, tools);
+      const { message, usage } = await chatCompletion(llm, messages, tools);
       messages.push(message);
+      // Charged to the Run's token budget like any agent's spend.
+      await recordUsage(logDir, runId, "moderator", usage);
 
       if (!message.tool_calls || message.tool_calls.length === 0) {
         break;

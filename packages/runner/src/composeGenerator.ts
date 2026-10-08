@@ -152,6 +152,14 @@ export function generateComposeFile(params: {
       LLM_BASE_URL: credentials.agents[scenario.agents[0]?.id || ""]?.llmBaseUrl || "http://localhost",
       LLM_API_KEY: credentials.agents[scenario.agents[0]?.id || ""]?.llmApiKey || "test",
       LLM_MODEL: credentials.agents[scenario.agents[0]?.id || ""]?.llmModel || "test",
+      // Only the Run-wide Scenario sampling: the borrowed agent's credential
+      // override tunes that agent's voice, not the Moderator's. Unset fields
+      // (including temperature) fall to the Moderator's own defaults.
+      ...(scenario.samplingParams && Object.keys(scenario.samplingParams).length > 0
+        ? { LLM_SAMPLING_JSON: JSON.stringify(scenario.samplingParams) }
+        : {}),
+      // Explicit, matching the volume mount, rather than the config's fallback.
+      LOG_DIR: "/logs",
     },
   };
 

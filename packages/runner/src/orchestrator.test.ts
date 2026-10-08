@@ -110,6 +110,28 @@ describe("superviseRunToTerminal", () => {
     expect(result.outcome).toBe("budget_exceeded");
   });
 
+  test("charges the Moderator's usage events to the budget like any agent's", async () => {
+    const logDir = freshLogDir();
+    const runId = "budget-run-moderator";
+    const transcriptDir = join(logDir, runId);
+    Bun.spawnSync(["mkdir", "-p", transcriptDir]);
+
+    // Only the Moderator has spent anything; that alone must trip the budget.
+    writeFileSync(
+      join(transcriptDir, "events.jsonl"),
+      JSON.stringify({ seq: 1, type: "usage", runId, agentId: "moderator", promptTokens: 100, completionTokens: 50, timestamp: new Date().toISOString() }) + "\n",
+    );
+
+    const result = await superviseRunToTerminal({
+      runId,
+      scenario: makeScenario({ maxRuntimeMs: 10000 }),
+      logDir,
+      budget: new BudgetTracker(100),
+    });
+
+    expect(result.outcome).toBe("budget_exceeded");
+  });
+
   test("detects cancellation signal via stopWhen and returns cancelled", async () => {
     const logDir = freshLogDir();
     const runId = "cancel-run-1";
