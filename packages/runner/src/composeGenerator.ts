@@ -20,11 +20,15 @@ export interface ComposeGenerationResult {
  * other, so they cannot reach one another directly -- all interaction must
  * flow through the Matrix MCP server.
  *
- * The agent and mcp_server containers additionally join the persistent
+ * The mcp_server and Moderator containers additionally join the persistent
  * `agora_infra` network (defined in docker-compose.infra.yml) so they reach
  * the self-hosted Synapse by container DNS name, using
  * `matrix.containerBaseUrl` (e.g. http://synapse:8008) rather than the
- * host-facing `matrix.hostBaseUrl` that the runner itself uses.
+ * host-facing `matrix.hostBaseUrl` that the runner itself uses. Agents get
+ * neither that network nor a homeserver URL: they reach Matrix only through
+ * the MCP server (ADR-0003's Reader invisibility relies on it), so the
+ * isolation is structural. Their LLM calls leave through their own bridge
+ * network's default egress, which agora_infra was never needed for.
  *
  * Relative paths (`..` build context, `../logs` volume) are resolved by compose
  * against the file's own directory, so they assume the file lives one level
@@ -50,8 +54,8 @@ export function generateComposeFile(params: {
   const mcpNetworks: string[] = [];
   const roster: RosterAgent[] = [];
 
-  // The per-agent isolation networks plus the shared infra network the agent
-  // and mcp-server containers use to reach Synapse by container DNS.
+  // The per-agent isolation networks plus the shared infra network the
+  // mcp-server and Moderator containers use to reach Synapse by container DNS.
   networks.agora_infra = { external: true };
 
   scenario.agents.forEach((agent, index) => {
@@ -76,7 +80,7 @@ export function generateComposeFile(params: {
 
     services[`agent_${agent.id}`] = {
       build: { context: "..", dockerfile: "docker/agent.Dockerfile" },
-      networks: [netName, "agora_infra"],
+      networks: [netName],
       ports: [`${port}:4000`],
       volumes: ["../logs:/logs"],
       environment: {
@@ -87,9 +91,6 @@ export function generateComposeFile(params: {
         MATRIX_ROOM_ID: roomId,
         MATRIX_ACCESS_TOKEN: cred.matrixAccessToken,
         MATRIX_USER_ID: cred.matrixUserId,
-        // Containers reach the self-hosted Synapse over the shared infra
-        // network, so they use the container-facing base URL, not the host one.
-        MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
         // The per-turn tool-step cap, read by the agent's config.ts.
         MAX_TOOL_STEPS_PER_TURN: String(scenario.maxToolStepsPerTurn),
         MCP_URL: "http://mcp_server:3000/mcp",
