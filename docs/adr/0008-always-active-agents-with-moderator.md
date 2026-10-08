@@ -167,3 +167,33 @@ The shift addresses three needs that the tick model could not meet:
    arbitrary number. The Moderator reads the actual activity level and can
    distinguish a stale discussion (no new substantive points) from a brief
    pause, making the verdict a human-like judgment rather than a tick counter.
+
+## Amendment (2026-10-08): what the code actually does
+
+Several statements above did not survive implementation. The decision —
+always-active, event-driven agents and a Moderator that alone judges when the
+discussion is over — stands; these details are corrected:
+
+- **The Moderator makes LLM calls.** Each Assessment is an LLM call (using the
+  first roster agent's endpoint and model, and the Scenario-wide sampling), and
+  the closing message is written by the model, not deterministic. Its calls
+  append `usage` events attributed to `moderator`, which the token budget
+  counts. The rejected "dedicated Moderator account" option stays rejected for
+  its account-management reasons; only its "needs no LLM calls" premise was
+  wrong.
+- **The runner writes the terminal event.** The Moderator does not record
+  `moderator_ended_run`. After posting its closing message it records the
+  non-terminal `moderator_closing_posted`; the runner, watching the
+  transcript, writes the single `moderator_ended_run` (ADR-0005's ownership
+  rule).
+- **An Assessment's event.** `moderator_classification` is written for every
+  valid verdict the model returns, and a STALE verdict refused because not
+  every agent has spoken yet is recorded as ACTIVE.
+- **`seq` is per writing process, not per Run.** Each container numbers its
+  own events from 1, so `seq` repeats within a Run. The only order across
+  processes is line order in `events.jsonl`, which is what the runner reads.
+- **Heartbeats.** Agents emit `agent_heartbeat` only in the `waiting` state,
+  once per wait; the Moderator emits `active` when an Assessment starts and
+  `waiting` while it waits. The Moderator judges liveness from agents' open
+  Turns (`agent_turn_started` with no matching end), not from heartbeats.
+- **Wall-clock abort reason** is "wall-clock runtime limit exceeded".

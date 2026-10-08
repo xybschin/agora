@@ -129,3 +129,25 @@ that had become a trap for the next reader of the union.
   despite the `tick: -1` sentinel, and exit code 143. The pre-fix Run
   `transcript-probe-1790685350736` is kept as the counter-example: correct
   verdict, but ending on a stray `tick_end`.
+
+## Amendment (2026-10-08): ticks and `run_completed` superseded by ADR-0008
+
+ADR-0008 replaced the global tick with per-agent Turns, so parts of this
+record describe a Run that no longer exists:
+
+- `tick_start`/`tick_end` are no longer emitted, and the `tick: -1` sentinel
+  on a cancelled Run's `run_aborted` is gone. Per-agent liveness is now
+  `agent_turn_started`/`agent_turn_ended`/`agent_turn_failed` plus heartbeats.
+- Nothing writes `run_completed` any more. A Run completes when the Moderator
+  judges the discussion stale: the Moderator records the non-terminal
+  `moderator_closing_posted` after its closing message, and the runner writes
+  the Run's single terminal `moderator_ended_run`. `deriveRunStatus` and
+  reclaim treat `moderator_ended_run` and `run_completed` alike, so older
+  transcripts keep their verdict.
+- The wall-clock limit (`maxRuntimeMs`) is a further abort path, recorded as
+  `run_aborted` with reason "wall-clock runtime limit exceeded".
+
+What this ADR decided still holds: the transcript records its own ending,
+success is never inferred, the runner owns the terminal event and writes
+exactly one per Run (claimed, so a racing cancel is a no-op), teardown is
+memoised, and a cancel exits 130/143.

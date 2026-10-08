@@ -72,3 +72,18 @@ cannot be reached by accident:
   that a Run did not record ending with (`incomplete`) is refused.
 - Nothing in the normal run path (`index.ts`) calls reclamation, so no Run can
   delete its own or another Run's artefacts.
+
+## Amendment (2026-10-08): terminal events and references
+
+- The terminal events that make a Run eligible are now `moderator_ended_run`
+  (the normal completion, see ADR-0005's amendment), `run_completed` (older
+  transcripts only) and `run_aborted`. An `incomplete` Run is still never
+  eligible.
+- ADR-0001, cited above for "read the logs, not a metadata store", is
+  superseded by ADR-0004. The principle stands on its own here: Run status is
+  derived from `logs/<runId>/events.jsonl` at reclaim time, as
+  `docs/CONTEXT.md` defines it.
+- Room deletion currently calls a Client-Server endpoint that Synapse does not
+  serve; deleting a room on Synapse needs its admin API and a server-admin
+  token. Until that is resolved (tracked as `agora-eni.4`), `--room` should
+  not be relied on.

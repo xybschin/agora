@@ -96,3 +96,16 @@ here.
   abort a Run while a level that moved does. Nothing has yet exercised the
   write against a live homeserver, so what is recorded here is what the code
   asks for rather than something a Run has been seen to get.
+
+## Amendment (2026-10-08): the setup account is not named in `users`
+
+The second paragraph above says the ladder seats the setup account at 100 in
+`users`, and the last Considered Option leans on that. The code does not, and
+cannot: Synapse refuses an `m.room.power_levels` event whose `users` names the
+room's creator ("Creator user ... must not appear in content.users"), because
+a creator's level is granted by the creator rule rather than by an entry in
+the event. The setup account is the creator of every Run room, so it holds
+100 implicitly, and `runRoomPowerLevels` names only the agents in `users`. The
+ladder's shape is unchanged — the setup account above every threshold, the
+agents at 50, a Reader at `users_default` — and the read-back still compares
+only the keys and entries the harness wrote.

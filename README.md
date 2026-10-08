@@ -8,25 +8,31 @@ chat together in a Matrix room, to see whether human-group phenomena
 
 - **`packages/mcp-server`** -- one shared MCP server (Streamable HTTP) exposing
   Matrix tools (`matrix_read_room`, `matrix_send_message`,
-  `matrix_add_reaction`). Every agent authenticates with its own access token
-  via the `Authorization` header; identity is bound to that token, never
-  passed as a tool argument, so agents can't impersonate each other.
+  `matrix_add_reaction`, and `matrix_wait_for_activity`, a long-poll the agent
+  runtime uses to wake on room activity). Every agent authenticates with its
+  own access token via the `Authorization` header; identity is bound to that
+  token, never passed as a tool argument, so agents can't impersonate each
+  other.
 - **`packages/agent`** -- one process per agent (one container per agent at
-  runtime). Runs a true tool-calling loop each tick: the model itself decides
-  when to read the room, post, and record its stance, up to
-  `maxToolStepsPerTick` steps. Exposes `POST /tick` and `GET /health`.
+  runtime), plus the Moderator's entrypoint. Each agent is always active: it
+  blocks on room activity, then takes a Turn -- a true tool-calling loop where
+  the model itself decides when to read the room, post, and record its stance,
+  up to `maxToolStepsPerTurn` steps -- and goes back to waiting. Exposes only
+  `GET /health`. The Moderator runs the same wait-and-wake loop, but each of
+  its Turns is an Assessment (ACTIVE or STALE); the first STALE one posts a
+  closing message and ends the Run (see ADR-0008).
 - **`packages/runner`** -- the CLI (`agora <scenario.yaml>`) that: creates a
   fresh Matrix room, pins its permissions so the scenario's declared Readers can
-  read the Run but not post to it, and posts the seed message, generates a
-  docker-compose file for the scenario, brings the containers up, drives
-  fixed-tick round-based scheduling (all agents ticked in parallel, then a
-  sleep, repeat), enforces the token budget cap, and tears everything down.
+  read the Run but not post to it, has the Scenario's seed author post the seed
+  message, generates a docker-compose file for the scenario, brings the
+  containers up, watches the event log until the Moderator ends the Run (or the
+  token budget, the wall-clock `maxRuntimeMs`, or a Ctrl-C stops it), records
+  how the Run ended, and tears everything down.
 - **`packages/shared`** -- scenario/credentials schemas (zod) and the shared
   JSONL event log used by both the runner and every agent container.
 - **`docker-compose.infra.yml`** -- a persistent (not per-scenario) Matrix
-  stack: Synapse (`matrixdotorg/synapse`) backed by PostgreSQL, Element Web
-  (`vectorim/element-web`) as the web client, and an Nginx reverse proxy that
-  routes `/` to Element Web and `/_matrix` / `/_synapse` to Synapse. Used
+  stack: Synapse (`matrixdotorg/synapse`, on `:8008`) backed by PostgreSQL, and
+  Element Web (`vectorim/element-web`, on `:8009`) as the web client. Used
   instead of a hosted chat service so "bots" are just accounts on your own
   instance -- no developer portal, no rate limits, no ToS risk. The previous
   Discord/Spacebar backend was replaced by this stack (see
@@ -39,16 +45,17 @@ Each agent gets its own dedicated Docker network that only it and
 no route between them -- any influence you observe in the logs happened
 *through the simulated Matrix room*, not a side channel. `mcp_server`
 additionally joins the persistent `agora_infra` network so it can reach
-Synapse (see `composeGenerator.ts`).
+Synapse; agent containers are kept off that network and are given no
+homeserver URL, so the MCP server is their only way into Matrix (see
+`composeGenerator.ts`).
 
 ## One-time setup (Matrix, recommended)
 
 1. `bun install` at the repo root.
 2. `docker compose -f docker-compose.infra.yml up -d` -- brings up the
-   self-hosted Matrix stack (Synapse + PostgreSQL + Element Web + Nginx) with
-   Element Web reachable at `http://localhost:8000` and the Matrix client/federation
-   API proxied under `/_matrix`. Backed by named volumes so data survives
-   restarts.
+   self-hosted Matrix stack (Synapse + PostgreSQL + Element Web) with Element
+   Web reachable at `http://localhost:8009` and the Matrix client API at
+   `http://localhost:8008`. Backed by named volumes so data survives restarts.
 3. `bun run bootstrap:matrix scenarios/remote-work-policy.yaml` -- registers
    one account per agent (+ a setup account) and writes the result to
    `credentials.yaml`. It creates no room: every Run creates its own (see
@@ -84,9 +91,10 @@ Bun runs the TypeScript directly -- there's no build/compile step. Use
 it.
 
 This creates a fresh Matrix room, posts the seed message, starts the
-containers, runs the configured number of ticks, then tears the containers
-down. Nothing is deleted from the homeserver -- the room and transcript stay
-there for review.
+containers, lets the agents talk until the Moderator judges the discussion
+stale (or a budget, wall-clock or Ctrl-C stop lands first), then tears the
+containers down. Nothing is deleted from the homeserver -- the room and
+transcript stay there for review.
 
 Each Run gets its own room, named `Agora - <scenario> - <runId>`, so running
 the same Scenario twice yields two independent conversations: an agent in the
@@ -96,8 +104,9 @@ the `runId` in the name matches the transcript under `logs/<runId>/`, which is
 how you tell them apart. To re-run a Scenario you do not need to re-bootstrap --
 bootstrap the accounts once, then run as many times as you like.
 
-Per-run JSONL logs land in `logs/<runId>/events.jsonl` (message, stance, and
-usage events).
+Per-run JSONL logs land in `logs/<runId>/events.jsonl`: messages, stances and
+usage, plus Turn, heartbeat and Assessment events and the Run's start and
+ending (see **Run status** in `docs/CONTEXT.md`).
 
 ### Reclaiming a finished Run
 
@@ -106,7 +115,7 @@ deletes during a Run. When you want to reclaim a specific finished Run's room
 and/or logs, do so explicitly (see ADR-0006):
 
 ```sh
-bun run packages/runner/src/reclaim.ts <runId> --room --logs
+bun run reclaim:runs -- <runId> --room --logs
 ```
 
 This removes `logs/<runId>/` off disk and deletes the Run's Matrix room
@@ -114,6 +123,8 @@ This removes `logs/<runId>/` off disk and deletes the Run's Matrix room
 transcript has no terminal event (`incomplete`), because that is the ambiguous
 case. Without a target (`--room` and/or `--logs`) it does nothing. Use
 `--all-eligible` instead of a runId to select every completed/aborted Run.
+Note: `--room` does not yet work against Synapse, which needs its admin API
+to delete a room (tracked as `agora-eni.4`); `--logs` works.
 
 ### Watching a Run live
 
@@ -133,13 +144,13 @@ whole conversation as it happens, and refused by the homeserver when it tries to
 send a message or a reaction. A Reader accepts the invite themselves, once per
 room; the runner holds no token for them, so there is nothing to add to
 `credentials.yaml`. A Reader is not in the roster, so it gets no container, no
-LLM credentials and no tick, and the agents have no member-list tool to notice
+LLM credentials and no Turns, and the agents have no member-list tool to notice
 it -- it is invisible to the population it is watching. (Someone reading the
 finished transcript afterwards needs none of this; they are an **Observer**.)
 
 The runner reads the power levels back after writing them and refuses to
 continue a Run whose room did not end up holding what it asked for. That
-refusal is recorded as a `run_aborted` event at tick 0 in
+refusal is recorded as a `run_aborted` event in
 `logs/<runId>/events.jsonl`, so the Run's status is *aborted* rather than merely
 incomplete.
 
@@ -159,9 +170,11 @@ incomplete.
   before `bun install --frozen-lockfile`, so Bun prints a harmless
   `skipped N workspaces ... not on disk` note for the other packages -- this
   was verified against `bun.lock` and doesn't affect the install.
-- Rate limits: ticks run all agents in parallel (Q22). If your LLM provider
-  rate-limits aggressively, raise `tickIntervalMs` in the scenario file or
-  pick a less-limited provider -- there's no retry/backoff built in yet.
+- Rate limits: every agent and the Moderator wake on the same room activity,
+  so their LLM calls tend to arrive together. `llm.ts` retries rate-limited
+  and transient failures with jittered exponential backoff, but a provider
+  that limits aggressively will still slow Turns down or fail them; a failed
+  Turn is recorded as `agent_turn_failed` and the agent goes back to waiting.
 - Matrix access tokens and LLM API keys live in plaintext env vars inside
   each generated compose file (`runner-generated/`, gitignored). Fine for a
   local research harness; do not reuse this pattern for anything

@@ -8,7 +8,8 @@ with opinion polarization) can be observed and reviewed after the fact.
 
 **Scenario**:
 A YAML definition (`scenarios/<name>.yaml`) describing a topic, seed message,
-tick/budget limits, and the roster of agents (with personas and initial
+its limits (a wall-clock `maxRuntimeMs`, a per-Turn tool-step cap, and a token
+budget), and the roster of agents (with personas and initial
 stances) for a simulation. A Scenario has no conversation of its own — it's
 a template that produces a new conversation each time it's executed. Its
 `seedAuthor` names the agent in the roster that posts the seed message: the
@@ -33,22 +34,22 @@ Exactly one of **aborted**, **completed**, or **incomplete**:
 
 - **aborted** — the transcript carries a `run_aborted` event: the room
   refused the permissions the Scenario asked for, the token budget was
-  blown, or the Run was cancelled with SIGINT/SIGTERM. The event's
-  `reason` says which.
-- **completed** — the transcript carries either a `run_completed` event
-  (written by the runner when the Moderator decides the Run is over and
-  records it, the intended and normal path) or a `moderator_ended_run` event
-  (the Moderator itself records this when it sends its closing message).
-  Success is *recorded*, never inferred from tick count or activity level:
-  a Run whose last events landed and then died before recording completion
-  is **incomplete**, not completed.
+  blown, the wall-clock limit ran out, or the Run was cancelled with
+  SIGINT/SIGTERM. The event's `reason` says which.
+- **completed** — the transcript carries a `moderator_ended_run` event, the
+  intended and normal path. The Moderator does not write it: when it posts
+  its closing message it records the non-terminal `moderator_closing_posted`,
+  and the runner, seeing that, writes the Run's single `moderator_ended_run`.
+  Older transcripts carry `run_completed` instead, which counts the same.
+  Success is *recorded*, never inferred from activity level: a Run whose
+  last events landed and then died before recording completion is
+  **incomplete**, not completed.
 - **incomplete** — a `run_started` event with no terminal event after it:
   the Run began and never said how it ended. A hard kill (SIGKILL, OOM)
   cannot be caught, so this is the honest signature of a crashed Run.
 
-Wall-clock timeout (when the Run exceeds `maxRuntimeMs`) is also an
-abortion path and records `run_aborted` with reason "wall-clock timeout",
-the backstop safety limit when neither the agents nor the Moderator bring
+Wall-clock timeout (when the Run exceeds `maxRuntimeMs`) records
+`run_aborted` with reason "wall-clock runtime limit exceeded", the backstop safety limit when neither the agents nor the Moderator bring
 the Run to closure.
 
 Transcripts written before `run_started`/`run_completed` existed carry
@@ -61,8 +62,8 @@ one-time verdict computed after the fact)
 **Transcript**:
 The ordered sequence of `message` events for a single Run, i.e. the
 conversation that took place in that Run's channel. Distinct from the full
-event log (`events.jsonl`), which also carries `stance`, `usage`, and
-tick-boundary events alongside the messages.
+event log (`events.jsonl`), which also carries `stance`, `usage`, Turn,
+heartbeat, Assessment and Run-lifecycle events alongside the messages.
 _Avoid_: Conversation log, chat history (both used informally elsewhere;
 Transcript is the precise term for "just the messages")
 
@@ -71,7 +72,7 @@ A human account declared in a Scenario's `observers` list and invited into
 that Scenario's room, which can read the room's full history and receive
 events live but is structurally barred from sending messages or reactions
 by the room's power levels. A Reader is deliberately not in the agent
-roster, so it gets no container, no LLM credentials, and no tick. Because
+roster, so it gets no container, no LLM credentials, and no Turns. Because
 the agents have no member-list tool and a Reader never speaks, a Reader is
 invisible to the population being observed.
 _Avoid_: Admin, moderator, lurker (all Matrix or chat-culture terms for
@@ -84,9 +85,12 @@ to the room with display name "Moderator" as a silent, active participant.
 Unlike a Reader (who is read-only), a Moderator speaks exactly once per Run:
 when it decides the discussion is complete and ends the Run with a closing
 message. It does not post the seed message — the Scenario's seed author
-does — so the Moderator posts nothing before its closing message. The Moderator is the only entity that can decide a Run is over
-(outside of budget overflow or operator cancellation). It is an agent in
-the sense of being always-active and participating in the room, but unlike
+does — so the Moderator posts nothing before its closing message. The
+Moderator is the only entity that can decide a discussion is over; the other
+ways a Run ends are safety stops, not judgments (budget overflow, the
+wall-clock limit, operator cancellation, or the room refusing its
+permissions during setup). It is an agent in the sense of being
+always-active, participating in the room and making LLM calls, but unlike
 the conversation agents it has no persona and no stance, and its only
 judgment is a series of **Assessments** — of which the first STALE one
 ends the Run.
@@ -145,9 +149,10 @@ agent's own commitments with the room). The real memory is this queue.
 > `remote-work-policy` is just the template, it ran four separate times.
 > **Dev**: The most recent one. Did it finish?
 > **Domain expert**: Check its Run status — completed means the transcript
-> carries a `run_completed` event, which the runner writes only once every
-> tick has actually run. If there's no terminal event after the
-> `run_started` one, it never said how it ended, so it's incomplete.
+> carries a `moderator_ended_run` event, which the runner writes only after
+> the Moderator has judged the discussion stale and posted its closing
+> message. If there's no terminal event after the `run_started` one, it
+> never said how it ended, so it's incomplete.
 > **Dev**: Got it. And the "conversation" is just the Transcript — the
 > messages, not the stance or usage events sitting alongside them.
 > **Dev**: I added myself to the remote-work-policy Scenario so I could
@@ -158,7 +163,7 @@ agent's own commitments with the room). The real memory is this queue.
 > waiting to look at the transcript afterwards.
 > **Dev**: And the agents can't tell I'm there?
 > **Domain expert**: They can't. A Reader isn't in the roster, so it has no
-> container and no tick, and the agents have no member-list tool to enumerate
+> container and takes no Turns, and the agents have no member-list tool to enumerate
 > the room with. Since it also never speaks, nothing it does reaches the
 > Transcript. That's deliberate — the whole point is to watch a phenomenon
 > without becoming part of it.
