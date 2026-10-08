@@ -96,6 +96,10 @@ function completed(): AgoraEvent {
   return { type: "run_completed", runId: "r", timestamp: "t" };
 }
 
+function moderatorEnded(): AgoraEvent {
+  return { type: "moderator_ended_run", runId: "r", rationale: "stale", messageId: "$end", timestamp: "t" };
+}
+
 function aborted(reason: string): AgoraEvent {
   return { type: "run_aborted", runId: "r", reason, timestamp: "t" };
 }
@@ -104,7 +108,6 @@ function aborted(reason: string): AgoraEvent {
 // its events. Only the legacy fallback in deriveRunStatus reads it.
 type LegacyEvent = AgoraEvent & { tick: number };
 const legacyStance = (tick: number): LegacyEvent => ({ ...stance(), tick });
-const legacyStarted = (tick: number): LegacyEvent => ({ ...started(), tick });
 
 describe("deriveRunStatus", () => {
   test("is aborted when a run_aborted event is present, even if it reached the final tick", () => {
@@ -118,6 +121,18 @@ describe("deriveRunStatus", () => {
     // the same file also says it was stopped.
     const events = [started(), stance(), completed(), aborted("cancelled by SIGTERM")];
     expect(deriveRunStatus(events, 1)).toEqual({ status: "aborted" });
+  });
+
+  test("is aborted when a run_aborted event is present, even alongside moderator_ended_run", () => {
+    const events = [started(), stance(), moderatorEnded(), aborted("wall-clock timeout")];
+    expect(deriveRunStatus(events, 1)).toEqual({ status: "aborted" });
+  });
+
+  test("is completed when the Moderator ended the Run", () => {
+    // moderator_ended_run is how a Run normally ends now; nothing writes
+    // run_completed any more.
+    const events = [started(), stance(), moderatorEnded()];
+    expect(deriveRunStatus(events, 3)).toEqual({ status: "completed" });
   });
 
   test("is completed when a run_completed event is present", () => {
@@ -155,7 +170,9 @@ describe("deriveRunStatus", () => {
   });
 
   test("a legacy transcript below the final tick is not inferred completed", () => {
-    const events = [legacyStarted(0), legacyStance(1)];
+    // No run_started, so this exercises the tick-count fallback, not the
+    // modern no-terminal-event path.
+    const events = [legacyStance(1), legacyStance(2)];
     expect(deriveRunStatus(events, 3)).toEqual({ status: "incomplete" });
   });
 

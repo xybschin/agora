@@ -49,10 +49,12 @@ export type RunStatus = "aborted" | "completed" | "incomplete";
  * Reads a Run status off its event log, from the terminal events the runner
  * records (packages/runner/src/runLifecycle.ts) rather than by inference:
  *
- * - `run_aborted` wins over everything, including a `run_completed` in the
+ * - `run_aborted` wins over everything, including a completion event in the
  *   same file. Both together is malformed, and "stopped" is the reading an
  *   operator can safely act on.
- * - `run_completed` is the only positive evidence of success. It is NOT
+ * - A completion event is the only positive evidence of success:
+ *   `moderator_ended_run`, the normal way a Run ends now, or `run_completed`,
+ *   which nothing writes any more but older transcripts carry. Success is NOT
  *   inferred from the highest tick: a Run that lands its final tick's events
  *   and then dies before recording completion is `incomplete`, because a false
  *   all-clear is worse than an honest gap.
@@ -68,10 +70,6 @@ export type RunStatus = "aborted" | "completed" | "incomplete";
  * tick-count inference — otherwise every Run on disk would regress to
  * `incomplete` the day this vocabulary ships. `totalTicks` is the legacy
  * Scenario's final tick and is read only on that path.
- *
- * Known gap: `moderator_ended_run`, which is how a Moderator-ended Run now
- * records its ending, is not read here, so such a Run currently reports
- * `incomplete` even though the glossary counts it as completed.
  */
 export function deriveRunStatus(
   events: AgoraEvent[],
@@ -80,7 +78,9 @@ export function deriveRunStatus(
   const isAborted = events.some((event) => event.type === "run_aborted");
   if (isAborted) return { status: "aborted" };
 
-  const isCompleted = events.some((event) => event.type === "run_completed");
+  const isCompleted = events.some(
+    (event) => event.type === "moderator_ended_run" || event.type === "run_completed",
+  );
   if (isCompleted) return { status: "completed" };
 
   const hasStart = events.some((event) => event.type === "run_started");

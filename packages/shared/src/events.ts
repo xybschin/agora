@@ -49,8 +49,9 @@ export interface RunStartedEvent extends BaseEvent {
 
 /**
  * Terminal: the Run completed. Still read by deriveRunStatus and by the
- * runner's reclaim command, but no current code path writes it: a Run the
- * Moderator ends records `moderator_ended_run` instead.
+ * runner's reclaim command for older transcripts, but no current code path
+ * writes it: a Run the Moderator ends records `moderator_ended_run` instead,
+ * which both read as completion too.
  */
 export interface RunCompletedEvent extends BaseEvent {
   type: "run_completed";
