@@ -138,9 +138,17 @@ describe("reclaimRun", () => {
   // to the room by that naming convention against the homeserver's public room
   // directory. It must not depend on the transcript's message events, so a Run
   // that never sent a message still resolves.
+  //
+  // The real fetch is captured once when the suite starts and restored after
+  // every test by a suite-level hook, so each stub is undone even when a test
+  // fails, and no hook is registered from inside a running test.
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
   function stubPublicRooms(rooms: Array<{ room_id: string; name: string }>): string[] {
     const deleted: string[] = [];
-    const original = globalThis.fetch;
     type FetchFn = typeof globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<FetchFn>[0], init?: Parameters<FetchFn>[1]) => {
       const url = String(input);
@@ -153,9 +161,6 @@ describe("reclaimRun", () => {
       }
       return new Response("{}");
     }) as FetchFn;
-    afterEach(() => {
-      globalThis.fetch = original;
-    });
     return deleted;
   }
 

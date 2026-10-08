@@ -26,7 +26,7 @@
  * (ADR-0006): eligibility is derived from `logs/<runId>/events.jsonl` at the
  * moment of deletion, never stored. Derive-then-act, logs as source of truth.
  *
- * Usage:
+ * Usage (or via the root script, `bun run reclaim:runs -- ...`):
  *   bun run packages/runner/src/reclaim.ts <runId>... [--logs] [--room]
  *       [--all-eligible] [--credentials <credentials.yaml>]
  *
@@ -256,4 +256,14 @@ export async function main(args: string[]): Promise<void> {
       process.exitCode = 1;
     }
   }
+}
+
+// Run only when executed directly (`bun run reclaim:runs`), never on import:
+// the tests import this module and must not trigger a reclamation. Like the
+// other runner entrypoints, an unexpected failure is logged and exits 1.
+if (import.meta.main) {
+  main(process.argv.slice(2)).catch((err) => {
+    log.error("reclaim failed:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
 }
