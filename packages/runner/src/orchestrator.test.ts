@@ -10,6 +10,7 @@ import type { ScenarioConfig } from "@agora/shared";
 import { superviseRunToTerminal } from "./orchestrator.js";
 import { BudgetTracker } from "./budget.js";
 import { createModeratorWatch } from "./moderatorWatch.js";
+import { createRunLifecycle } from "./runLifecycle.js";
 
 const dirs: string[] = [];
 
@@ -37,7 +38,7 @@ function freshLogDir(): string {
 }
 
 describe("superviseRunToTerminal", () => {
-  test("detects moderator_ended_run event and returns moderator outcome", async () => {
+  test("detects the Moderator's moderator_closing_posted and returns moderator outcome", async () => {
     const logDir = freshLogDir();
     const runId = "mod-run-1";
     const transcriptDir = join(logDir, runId);
@@ -47,7 +48,7 @@ describe("superviseRunToTerminal", () => {
       join(transcriptDir, "events.jsonl"),
       JSON.stringify({
         seq: 1,
-        type: "moderator_ended_run",
+        type: "moderator_closing_posted",
         runId,
         rationale: "Discussion concluded naturally",
         messageId: "$event123",
@@ -221,7 +222,7 @@ describe("superviseRunToTerminal", () => {
       join(transcriptDir, "events.jsonl"),
       [
         { seq: 1, type: "moderator_classification", runId, classification: "stale", rationale: "agents repeat themselves", timestamp },
-        { seq: 2, type: "moderator_ended_run", runId, rationale: "agents repeat themselves", messageId: "$end", timestamp },
+        { seq: 2, type: "moderator_closing_posted", runId, rationale: "agents repeat themselves", messageId: "$end", timestamp },
       ]
         .map((e) => JSON.stringify(e))
         .join("\n") + "\n",
@@ -237,5 +238,51 @@ describe("superviseRunToTerminal", () => {
     });
 
     expect(printed).toEqual(["Moderator Assessment: STALE — agents repeat themselves"]);
+  });
+
+  test("a Moderator-ended Run's transcript carries exactly one terminal event", async () => {
+    const logDir = freshLogDir();
+    const runId = "single-terminal-1";
+    const lifecycle = createRunLifecycle({ logDir, composeDown: async () => {} });
+    await lifecycle.begin(runId);
+
+    // What the Moderator's container appends when a STALE Assessment ends the Run.
+    const timestamp = "2026-10-08T12:00:00.000Z";
+    const transcriptPath = join(logDir, runId, "events.jsonl");
+    writeFileSync(
+      transcriptPath,
+      readFileSync(transcriptPath, "utf8") +
+        [
+          { seq: 1, type: "moderator_classification", runId, classification: "stale", rationale: "frozen", timestamp },
+          { seq: 2, type: "message", runId, agentId: "moderator", matrixEventId: "$close", roomId: "!r", content: "bye", timestamp },
+          { seq: 3, type: "moderator_closing_posted", runId, rationale: "frozen", messageId: "$close", timestamp },
+        ]
+          .map((e) => JSON.stringify(e))
+          .join("\n") +
+        "\n",
+    );
+
+    const result = await superviseRunToTerminal({
+      runId,
+      scenario: makeScenario(),
+      logDir,
+      budget: new BudgetTracker(),
+      stopWhen: () => !lifecycle.isActive(),
+      moderatorWatch: createModeratorWatch({ print: () => {}, warn: () => {} }),
+    });
+    if (result.outcome !== "moderator_ended") throw new Error(`unexpected outcome ${result.outcome}`);
+    await lifecycle.recordOutcome(runId, {
+      type: "moderatorEnded",
+      rationale: result.rationale,
+      messageId: result.messageId,
+    });
+
+    const events = readFileSync(transcriptPath, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type: string });
+    const terminal = events.filter((e) => ["moderator_ended_run", "run_completed", "run_aborted"].includes(e.type));
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toEqual(expect.objectContaining({ type: "moderator_ended_run", rationale: "frozen", messageId: "$close" }));
   });
 });
