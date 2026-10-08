@@ -2,9 +2,11 @@ import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { matrixToolCatalog } from "@agora/shared";
+import { createLogger, matrixToolCatalog } from "@agora/shared";
 import { getMatrixClient } from "./matrixPool.js";
 import { readRoom, sendMessage, addReaction, waitForActivity } from "./matrixActions.js";
+
+const log = createLogger("mcp-server");
 
 const app = express();
 app.use(express.json());
@@ -120,7 +122,7 @@ app.post("/mcp", async (req, res) => {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error("Error handling MCP request:", err);
+    log.error("Error handling MCP request:", err);
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: "2.0",
@@ -135,5 +137,5 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, "0.0.0.0", () => {
-  console.log(`agora matrix-mcp listening on :${port}`);
+  log.info(`agora matrix-mcp listening on :${port}`);
 });

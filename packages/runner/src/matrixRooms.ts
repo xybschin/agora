@@ -21,6 +21,10 @@
  * re-spelled and re-escaped at each of the four calls that address a room.
  */
 
+import { createLogger } from "@agora/shared";
+
+const log = createLogger("matrix");
+
 /**
  * The Client-Server API version this harness speaks. Matrix versions the whole
  * CS API together, so this is a property of the runner, not of any one call.
@@ -122,8 +126,8 @@ export async function csRequest<T>(
 
     if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
       const waitMs = retryAfterMs(text);
-      console.log(
-        `  rate limited on ${method} ${urlPath}; waiting ${waitMs}ms and retrying.`,
+      log.warn(
+        `rate limited on ${method} ${urlPath}; waiting ${waitMs}ms and retrying.`,
       );
       await new Promise((resolve) => setTimeout(resolve, waitMs));
       continue;

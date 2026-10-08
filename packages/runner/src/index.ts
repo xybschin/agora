@@ -2,7 +2,7 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { formatRunId } from "@agora/shared";
+import { createLogger, formatRunId } from "@agora/shared";
 import { createRunLifecycle } from "./runLifecycle.js";
 import { loadScenario, loadCredentials, loadLocalReaders } from "./loadConfig.js";
 import { generateComposeFile } from "./composeGenerator.js";
@@ -13,6 +13,8 @@ import { seedRoom } from "./seedRoom.js";
 import { createRunRoom } from "./runRoom.js";
 import { recordRoomSetupAbort } from "./runAbort.js";
 import type { RunOutcome } from "./runLifecycle.js";
+
+const log = createLogger("runner");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -40,7 +42,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
       .closeOutRun(signal)
       .then(() => process.exit(code))
       .catch((err) => {
-        console.error(`failed to record cancellation:`, err);
+        log.error("failed to record cancellation:", err);
         process.exit(1);
       });
   });
@@ -81,7 +83,7 @@ async function main(): Promise<void> {
   // name can tell this Run apart from earlier ones of the same Scenario. It
   // drives the transcript directory and the Matrix room name unchanged.
   const runId = formatRunId(scenario.name, new Date());
-  console.log(`Starting run ${runId}`);
+  log.info(`Starting run ${runId}`);
 
   // Marked in flight before anything that can fail, so a signal arriving during
   // room setup or container startup is still recorded as a cancellation. This
@@ -129,7 +131,7 @@ async function main(): Promise<void> {
   await mkdir(generatedDir, { recursive: true });
   const composeFile = path.join(generatedDir, `docker-compose.${runId}.yml`);
   await writeFile(composeFile, yamlText, "utf8");
-  console.log(`Generated ${composeFile}`);
+  log.info(`Generated ${composeFile}`);
 
   // From here a cancellation can also tear down, not just record.
   lifecycle.attachComposeFile(composeFile);
@@ -137,14 +139,14 @@ async function main(): Promise<void> {
   const budget = new BudgetTracker(scenario.budget.maxTotalTokens);
 
   try {
-    console.log("Starting containers...");
+    log.info("Starting containers...");
     await composeUp(composeFile);
 
     const healthUrls = Object.values(agentPorts).map((port) => `http://localhost:${port}/health`);
-    console.log("Waiting for agents to become healthy...");
+    log.info("Waiting for agents to become healthy...");
     await waitForHealth(healthUrls);
 
-    console.log("Supervising Run to terminal outcome...");
+    log.info("Supervising Run to terminal outcome...");
     const result = await superviseRunToTerminal({
       runId,
       scenario,
@@ -157,9 +159,9 @@ async function main(): Promise<void> {
       // The signal handler owns writing the terminal event; returning here stops
       // the supervision and makes the runner's own branch agree, while
       // recordTerminal declines to write a second one.
-      console.warn("Run cancelled via signal; see run_aborted in the transcript.");
+      log.warn("Run cancelled via signal; see run_aborted in the transcript.");
     } else if (result.outcome === "moderator_ended") {
-      console.log(
+      log.info(
         `Run completed: Moderator ended the Run. Rationale: ${result.rationale}`,
       );
       const outcome: RunOutcome = {
@@ -169,24 +171,24 @@ async function main(): Promise<void> {
       };
       await lifecycle.recordOutcome(runId, outcome);
     } else if (result.outcome === "wall_clock_exceeded") {
-      console.warn("Run aborted: wall-clock runtime limit exceeded");
+      log.warn("Run aborted: wall-clock runtime limit exceeded");
       const outcome: RunOutcome = { type: "wallClockExceeded" };
       await lifecycle.recordOutcome(runId, outcome);
     } else if (result.outcome === "budget_exceeded") {
-      console.warn("Run aborted: token budget exceeded");
+      log.warn("Run aborted: token budget exceeded");
       const outcome: RunOutcome = { type: "budgetExceeded" };
       await lifecycle.recordOutcome(runId, outcome);
     }
-    console.log("Budget summary:", budget.summary());
-    console.log(`Logs: logs/${runId}/events.jsonl`);
-    console.log(`Matrix room left in place for review: ${roomId}`);
+    log.info("Budget summary:", budget.summary());
+    log.info(`Logs: logs/${runId}/events.jsonl`);
+    log.info(`Matrix room left in place for review: ${roomId}`);
   } finally {
-    console.log("Tearing down containers...");
+    log.info("Tearing down containers...");
     await lifecycle.teardownContainers(composeFile);
   }
 }
 
 main().catch((err) => {
-  console.error(err);
+  log.error("run failed:", err);
   process.exit(1);
 });

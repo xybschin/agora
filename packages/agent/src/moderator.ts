@@ -1,4 +1,4 @@
-import { appendEvent, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@agora/shared";
+import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
@@ -268,6 +268,7 @@ export class ModeratorRuntime {
    * way an agent's turn counter does.
    */
   private turn = 0;
+  private readonly log = createLogger("moderator");
 
   /** The most recent Assessments, oldest first, bounded to PRIOR_ASSESSMENTS_SHOWN. */
   private priorAssessments: PriorAssessment[] = [];
@@ -510,7 +511,7 @@ export class ModeratorRuntime {
             });
             resultText = `message posted (${sent.id})`;
           } catch (parseError) {
-            console.error("Failed to parse matrix_send_message response:", resultText);
+            this.log.error("failed to parse matrix_send_message response:", resultText);
             throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
           }
         } else {
@@ -613,7 +614,7 @@ export class ModeratorRuntime {
         waitFailures = 0;
       } catch (err) {
         const delay = waitBackoffDelay(waitBackoff, ++waitFailures);
-        console.error(`[moderator] waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
+        this.log.warn(`waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
         await waitBackoff.sleep(delay);
         continue;
       }
@@ -629,10 +630,10 @@ export class ModeratorRuntime {
         continue;
       }
 
-      const result = await runTurnWithRetry("moderator", turnRetry, () => this.runTurn(opts), async (err) => {
+      const result = await runTurnWithRetry(this.log, turnRetry, () => this.runTurn(opts), async (err) => {
         // A failed Assessment is recorded so the transcript says why the
         // Moderator went quiet.
-        console.error(`[moderator] turn ${this.turn} failed:`, err);
+        this.log.error(`turn ${this.turn} failed:`, err);
         await appendEvent(this.config.logDir, runId, {
           type: "agent_turn_failed",
           runId,

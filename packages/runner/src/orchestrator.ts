@@ -4,6 +4,9 @@ import { join } from "node:path";
 import type { ScenarioConfig, SequencedEvent, UsageEvent } from "@agora/shared";
 import type { BudgetTracker } from "./budget.js";
 import { createModeratorWatch, type ModeratorWatch } from "./moderatorWatch.js";
+import { createLogger } from "@agora/shared";
+
+const log = createLogger("runner");
 
 export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise<void> {
   for (const url of urls) {
@@ -118,7 +121,7 @@ export async function superviseRunToTerminal(params: {
       }
     } catch (err) {
       // Transcript file may not exist yet or may not be readable; keep polling.
-      console.error("error reading transcript:", err);
+      log.error("error reading transcript:", err);
     }
 
     // Sleep before the next poll.

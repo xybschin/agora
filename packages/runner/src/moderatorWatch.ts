@@ -1,4 +1,6 @@
-import type { SequencedEvent } from "@agora/shared";
+import { createLogger, type SequencedEvent } from "@agora/shared";
+
+const log = createLogger("runner");
 
 /**
  * Two missed Moderator heartbeats: the Moderator writes one per long-poll, so a
@@ -27,8 +29,8 @@ export interface ModeratorWatchDeps {
  * (agora-6s2.6) and would drop a second Assessment that shares one.
  */
 export function createModeratorWatch(deps: ModeratorWatchDeps = {}) {
-  const print = deps.print ?? console.log;
-  const warn = deps.warn ?? console.warn;
+  const print = deps.print ?? ((line) => log.info(line));
+  const warn = deps.warn ?? ((line) => log.warn(line));
   const now = deps.now ?? Date.now;
   const quietWarnAfterMs = deps.quietWarnAfterMs ?? moderatorQuietWarnAfterMs;
 
@@ -41,10 +43,10 @@ export function createModeratorWatch(deps: ModeratorWatchDeps = {}) {
   function observe(events: SequencedEvent[]): void {
     for (const event of events.slice(seen)) {
       if (event.type === "moderator_classification") {
-        print(formatAssessment(event.timestamp, event.classification, event.rationale));
+        print(formatAssessment(event.classification, event.rationale));
       }
       if (event.type === "agent_turn_failed") {
-        print(`[${formatTime(event.timestamp)}] Turn failed: ${event.agentId} turn ${event.turn} — ${event.error}`);
+        print(`Turn failed: ${event.agentId} turn ${event.turn} — ${event.error}`);
       }
       if (isFromModerator(event)) {
         lastHeardAt = now();
@@ -57,7 +59,7 @@ export function createModeratorWatch(deps: ModeratorWatchDeps = {}) {
     if (!warned && quietForMs >= quietWarnAfterMs) {
       warned = true;
       warn(
-        `Warning: the Moderator has written nothing (no heartbeat, no Assessment) for ` +
+        `the Moderator has written nothing (no heartbeat, no Assessment) for ` +
           `${Math.round(quietForMs / 1000)}s; it may have crashed or never started.`,
       );
     }
@@ -73,12 +75,6 @@ function isFromModerator(event: SequencedEvent): boolean {
   return "agentId" in event && event.agentId === "moderator";
 }
 
-function formatAssessment(timestamp: string, classification: "active" | "stale", rationale: string): string {
-  return `[${formatTime(timestamp)}] Moderator Assessment: ${classification.toUpperCase()} — ${rationale}`;
-}
-
-function formatTime(timestamp: string): string {
-  const at = new Date(timestamp);
-  // An unparseable timestamp is shown as written rather than crashing supervision.
-  return Number.isNaN(at.getTime()) ? timestamp : `${at.toISOString().slice(11, 19)} UTC`;
+function formatAssessment(classification: "active" | "stale", rationale: string): string {
+  return `Moderator Assessment: ${classification.toUpperCase()} — ${rationale}`;
 }

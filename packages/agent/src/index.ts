@@ -1,9 +1,11 @@
 import express from "express";
+import { createLogger } from "@agora/shared";
 import { loadAgentEnvConfig } from "./config.js";
 import { MatrixMcpClient } from "./mcpClient.js";
 import { AgentRuntime } from "./loop.js";
 
 const env = loadAgentEnvConfig();
+const log = createLogger(env.agentId);
 const mcp = new MatrixMcpClient(env.mcpUrl, env.matrixAccessToken);
 
 const runtime = new AgentRuntime({
@@ -31,7 +33,7 @@ app.get("/health", (_req, res) => {
 });
 
 app.listen(env.port, "0.0.0.0", () => {
-  console.log(`agent ${env.agentId} listening on :${env.port} (continuous event-driven loop)`);
+  log.info(`listening on :${env.port} (continuous event-driven loop)`);
 });
 
 // Start the event-driven loop. This never returns: the agent stays active for
@@ -41,6 +43,6 @@ runtime.runLoop().catch((err) => {
   // A hard failure of the loop itself (not a transient wait blip, which runLoop
   // already recovers from) is fatal: the agent's half of the Run would go
   // silent, so exit and let the Run's supervision record the gap.
-  console.error(`[${env.agentId}] agent loop exited fatally:`, err);
+  log.error("agent loop exited fatally:", err);
   process.exit(1);
 });

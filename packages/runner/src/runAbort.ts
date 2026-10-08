@@ -18,6 +18,9 @@
 import type { RunLifecycle } from "./runLifecycle.js";
 import { RoomPermissionsError } from "./roomPermissions.js";
 import { ReaderInviteError } from "./runRoom.js";
+import { createLogger } from "@agora/shared";
+
+const log = createLogger("runner");
 
 /**
  * Handles a failure from `createRunRoom` that should abort the Run: prints the
@@ -37,7 +40,7 @@ export async function recordRoomSetupAbort(
   if (!(err instanceof RoomPermissionsError || err instanceof ReaderInviteError)) {
     return false;
   }
-  console.error(`Aborting run ${runId}: ${err.message}`);
+  log.error(`Aborting run ${runId}: ${err.message}`);
   await lifecycle.recordTerminal(runId, {
     type: "run_aborted",
     runId,

@@ -40,10 +40,12 @@ import { readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgoraEvent, SequencedEvent } from "@agora/shared";
-import { parseRunId } from "@agora/shared";
+import { createLogger, parseRunId } from "@agora/shared";
 import { loadCredentials } from "./loadConfig.js";
 import { deleteRoom, findRoomIdByName } from "./matrixRooms.js";
 import { roomNameForRun } from "./runRoom.js";
+
+const log = createLogger("reclaim");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -196,7 +198,7 @@ export async function main(args: string[]): Promise<void> {
   // Does nothing by default: with no target named, there is nothing to do.
   if (!reclaimLogs && !reclaimRoom) {
     printUsage();
-    console.error("Nothing to reclaim: pass at least one of --logs or --room.");
+    log.error("Nothing to reclaim: pass at least one of --logs or --room.");
     process.exitCode = 1;
     return;
   }
@@ -206,7 +208,7 @@ export async function main(args: string[]): Promise<void> {
     : args.filter((arg) => !arg.startsWith("--"));
 
   if (runIds.length === 0) {
-    console.error("Nothing to reclaim: no runIds selected.");
+    log.error("Nothing to reclaim: no runIds selected.");
     process.exitCode = 1;
     return;
   }
@@ -225,19 +227,19 @@ export async function main(args: string[]): Promise<void> {
         targets: { reclaimLogs, reclaimRoom },
       });
       if (result.verdict === "incomplete-skipped") {
-        console.warn(`  ${runId}: incomplete (no terminal event) — never eligible, skipped.`);
+        log.warn(`${runId}: incomplete (no terminal event) — never eligible, skipped.`);
       } else {
         const parts: string[] = [];
         if (result.reclaimedLogs) parts.push("logs");
         if (result.reclaimedRoom) parts.push("room");
         if (parts.length > 0) {
-          console.log(`  ${runId}: reclaimed ${parts.join(" and ")}.`);
+          log.info(`${runId}: reclaimed ${parts.join(" and ")}.`);
         } else {
-          console.warn(`  ${runId}: terminal, but nothing reclaimed (room not found).`);
+          log.warn(`${runId}: terminal, but nothing reclaimed (room not found).`);
         }
       }
     } catch (err) {
-      console.error(`  ${runId}: failed to reclaim — ${(err as Error).message}`);
+      log.error(`${runId}: failed to reclaim — ${(err as Error).message}`);
       process.exitCode = 1;
     }
   }

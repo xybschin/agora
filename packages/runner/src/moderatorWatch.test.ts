@@ -46,8 +46,8 @@ describe("createModeratorWatch", () => {
     ]);
 
     expect(printed).toEqual([
-      "[12:00:05 UTC] Moderator Assessment: ACTIVE — new arguments are still arriving",
-      "[12:01:10 UTC] Moderator Assessment: STALE — the agents repeat themselves",
+      "Moderator Assessment: ACTIVE — new arguments are still arriving",
+      "Moderator Assessment: STALE — the agents repeat themselves",
     ]);
   });
 
@@ -60,8 +60,8 @@ describe("createModeratorWatch", () => {
     watch.observe([first, assessment(2, "active", "second", "2026-10-07T12:00:35.000Z")]);
 
     expect(printed).toEqual([
-      "[12:00:05 UTC] Moderator Assessment: ACTIVE — first",
-      "[12:00:35 UTC] Moderator Assessment: ACTIVE — second",
+      "Moderator Assessment: ACTIVE — first",
+      "Moderator Assessment: ACTIVE — second",
     ]);
   });
 
@@ -87,8 +87,8 @@ describe("createModeratorWatch", () => {
     ]);
 
     expect(printed).toEqual([
-      "[09:37:12 UTC] Turn failed: agent-a turn 1 — 429 No capacity available",
-      "[09:37:40 UTC] Turn failed: moderator turn 1 — 503 Service Unavailable",
+      "Turn failed: agent-a turn 1 — 429 No capacity available",
+      "Turn failed: moderator turn 1 — 503 Service Unavailable",
     ]);
   });
 
@@ -101,8 +101,8 @@ describe("createModeratorWatch", () => {
     watch.observe([first, turnFailed(4, "agent-b", 1, "429", "2026-10-07T09:37:13.000Z")]);
 
     expect(printed).toEqual([
-      "[09:37:12 UTC] Turn failed: agent-a turn 1 — 429",
-      "[09:37:13 UTC] Turn failed: agent-b turn 1 — 429",
+      "Turn failed: agent-a turn 1 — 429",
+      "Turn failed: agent-b turn 1 — 429",
     ]);
   });
 

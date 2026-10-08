@@ -1,3 +1,5 @@
+import type { Logger } from "@agora/shared";
+
 /**
  * Bounds on re-running a Turn that threw. chatCompletion already waits out
  * provider blips inside a turn (see llm.ts `RetryOptions`); this is the outer
@@ -34,7 +36,7 @@ export const DEFAULT_TURN_RETRY: TurnRetryOptions = {
  * Returns the turn's result, or undefined once the loop gives up.
  */
 export async function runTurnWithRetry<T>(
-  label: string,
+  log: Logger,
   retry: TurnRetryOptions,
   attempt: () => Promise<T>,
   onFailure: (err: unknown) => Promise<void>,
@@ -46,15 +48,15 @@ export async function runTurnWithRetry<T>(
     } catch (err) {
       await onFailure(err);
       if (!canRetry()) {
-        console.error(`[${label}] the failed turn already posted; not retrying it`);
+        log.warn("the failed turn already posted; not retrying it");
         return undefined;
       }
       if (n >= retry.maxRetries) {
-        console.error(`[${label}] turn retries exhausted (${retry.maxRetries}); will resume waiting`);
+        log.error(`turn retries exhausted (${retry.maxRetries}); will resume waiting`);
         return undefined;
       }
       const delay = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** n);
-      console.error(`[${label}] retrying the turn (${n + 1}/${retry.maxRetries}) in ${delay}ms`);
+      log.warn(`retrying the turn (${n + 1}/${retry.maxRetries}) in ${delay}ms`);
       await retry.sleep(delay);
     }
   }

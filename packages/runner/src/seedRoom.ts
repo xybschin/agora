@@ -1,5 +1,8 @@
 import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
 import { roomPath, csRequest } from "./matrixRooms.js";
+import { createLogger } from "@agora/shared";
+
+const log = createLogger("runner");
 
 /**
  * Posts the Scenario's seedMessage into the Matrix room as the Scenario's seed
@@ -66,7 +69,7 @@ export async function seedRoom(params: {
       body: { msgtype: "m.text", body: scenario.seedMessage },
     },
   );
-  console.log(
+  log.info(
     `Posted seed message as ${scenario.seedAuthor} (${author.matrixUserId}, ${sent.event_id}).`,
   );
 }

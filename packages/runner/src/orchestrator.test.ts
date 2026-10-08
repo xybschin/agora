@@ -237,6 +237,6 @@ describe("superviseRunToTerminal", () => {
       moderatorWatch: createModeratorWatch({ print: (line) => printed.push(line), warn: () => {} }),
     });
 
-    expect(printed).toEqual(["[12:03:00 UTC] Moderator Assessment: STALE — agents repeat themselves"]);
+    expect(printed).toEqual(["Moderator Assessment: STALE — agents repeat themselves"]);
   });
 });

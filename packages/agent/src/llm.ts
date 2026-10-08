@@ -1,5 +1,7 @@
 import OpenAI from "openai";
-import type { SamplingParams } from "@agora/shared";
+import { createLogger, type SamplingParams } from "@agora/shared";
+
+const log = createLogger("llm");
 
 /**
  * OpenAI-compatible chat-completions client using the official SDK.
@@ -305,8 +307,8 @@ async function withRetry<T>(
       const ceiling = Math.min(retry.maxDelayMs, retry.baseDelayMs * 2 ** (attempt - 1));
       const delay = Math.round(ceiling * retry.random());
       if (retry.now() + delay >= deadline) throw error;
-      console.error(
-        `[LLM] Transient failure (${error instanceof Error ? error.message : String(error)}); ` +
+      log.warn(
+        `transient failure (${error instanceof Error ? error.message : String(error)}); ` +
           `retry ${attempt}/${retry.maxAttempts - 1} in ${delay}ms`,
       );
       await retry.sleep(delay);
@@ -352,7 +354,7 @@ export async function chatCompletion(
   const retry = { ...DEFAULT_RETRY, ...retryOverrides };
   const deadline = retry.now() + retry.maxTotalWaitMs;
 
-  console.error(`[LLM] Sending request to ${config.baseUrl}`, {
+  log.info(`sending request to ${config.baseUrl}`, {
     model: config.model,
     messageCount: messages.length,
     toolCount: tools.length,
@@ -364,7 +366,7 @@ export async function chatCompletion(
       client.chat.completions.create(buildCreateParams(client, config, messages, tools, config.sampling), { signal }),
     );
 
-    console.error(`[LLM] Got response with ${response.choices.length} choice(s)`);
+    log.info(`got response with ${response.choices.length} choice(s)`);
 
     const result = toResult(response);
     if (!result) throw new Error("LLM response contained no choices");
@@ -375,8 +377,8 @@ export async function chatCompletion(
     // not kill the Run. Retry once without any sampling, then surface if the
     // stripped call still fails. See the module docstring for the contract.
     if (isUnsupportedParameterError(error) && config.sampling) {
-      console.error(
-        `[LLM] Provider rejected sampling params (${error instanceof Error ? error.message : String(error)}); retrying without sampling`,
+      log.warn(
+        `provider rejected sampling params (${error instanceof Error ? error.message : String(error)}); retrying without sampling`,
       );
       try {
         const response = await withRetry(retry, deadline, (signal) =>
@@ -386,12 +388,12 @@ export async function chatCompletion(
         if (result) return result;
       } catch (retryError) {
         const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
-        console.error(`[LLM] Retry without sampling also failed: ${retryMsg}`);
+        log.error(`retry without sampling also failed: ${retryMsg}`);
       }
     }
 
     const errorMsg = error instanceof Error ? error.message : String(error);
-    console.error(`[LLM] Request failed: ${errorMsg}`);
+    log.error(`request failed: ${errorMsg}`);
     throw new Error(`Failed to reach LLM at ${config.baseUrl}: ${errorMsg}`);
   }
 }

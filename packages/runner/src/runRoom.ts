@@ -17,6 +17,9 @@
 import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
 import { createRoom, inviteUserToRoom, joinRoom, setDisplayName } from "./matrixRooms.js";
 import { establishRunRoomPermissions, runRoomPowerLevels } from "./roomPermissions.js";
+import { createLogger } from "@agora/shared";
+
+const log = createLogger("runner");
 
 /**
  * The name a Run's room carries. It repeats the Scenario and carries the runId,
@@ -95,13 +98,13 @@ export async function createRunRoom(params: {
     }
   }
 
-  console.log(`Creating a Matrix room for run ${runId}...`);
+  log.info(`Creating a Matrix room for run ${runId}...`);
   const roomId = await createRoom(
     baseUrl,
     setupAccessToken,
     roomNameForRun(scenario.name, runId),
   );
-  console.log(`  room: ${roomId}`);
+  log.info(`room: ${roomId}`);
 
   // The setup account joins the room as the Moderator before any agents join.
   // Its display name is set to "Moderator" so it is visible to agents and Readers
@@ -109,14 +112,14 @@ export async function createRunRoom(params: {
   const setupUserId = credentials.matrixSetupUserId;
   await setDisplayName(baseUrl, setupAccessToken, setupUserId, "Moderator");
   await joinRoom(baseUrl, setupAccessToken, roomId);
-  console.log(`  setup account joined as Moderator to ${roomId}.`);
+  log.info(`setup account joined as Moderator to ${roomId}.`);
 
   for (const agent of scenario.agents) {
     const cred = credentials.agents[agent.id]!;
     await inviteUserToRoom(baseUrl, setupAccessToken, roomId, cred.matrixUserId);
     await joinRoom(baseUrl, cred.matrixAccessToken, roomId);
   }
-  console.log(`Admitted ${scenario.agents.length} agents to ${roomId}.`);
+  log.info(`Admitted ${scenario.agents.length} agents to ${roomId}.`);
 
   // A Reader must read the room in full and be refused every send, so the room's
   // permissions are written explicitly and then read back: this throws rather
@@ -131,8 +134,8 @@ export async function createRunRoom(params: {
       ),
     }),
   });
-  console.log(
-    `  permissions: setup account at 100, agents at 50, everyone else read-only.`,
+  log.info(
+    `permissions: setup account at 100, agents at 50, everyone else read-only.`,
   );
 
   // Readers are invited, never joined. The runner holds no token for a Reader --
@@ -154,11 +157,11 @@ export async function createRunRoom(params: {
       await inviteUserToRoom(baseUrl, setupAccessToken, roomId, reader);
     } catch (cause) {
       firstReaderFailure ??= { readerId: reader, cause: messageOf(cause) };
-      console.error(`  could not invite Reader ${reader}: ${messageOf(cause)}`);
+      log.error(`could not invite Reader ${reader}: ${messageOf(cause)}`);
     }
   }
   if (readerList.length > 0) {
-    console.log(`Invited ${readerList.length} Readers to ${roomId}.`);
+    log.info(`Invited ${readerList.length} Readers to ${roomId}.`);
   }
   if (firstReaderFailure) {
     throw new ReaderInviteError(

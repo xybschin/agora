@@ -1038,7 +1038,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
   });
 
   test("a failed wait is not recorded as a failed turn", async () => {
-    const errors = spyOn(console, "error").mockImplementation(() => {});
+    const warnings = spyOn(console, "warn").mockImplementation(() => {});
     try {
       const { events } = await runLoopOnce(2, async (n) => {
         if (n === 1) throw new Error("dropped connection");
@@ -1046,10 +1046,10 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       });
 
       expect(events.filter((e) => e.type === "agent_turn_failed")).toHaveLength(0);
-      const logged = errors.mock.calls.map((args) => String(args[0]));
+      const logged = warnings.mock.calls.map((args) => String(args[0]));
       expect(logged.some((line) => line.includes("waiting for room activity failed"))).toBe(true);
     } finally {
-      errors.mockRestore();
+      warnings.mockRestore();
     }
   });
 });

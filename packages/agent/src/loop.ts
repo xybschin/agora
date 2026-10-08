@@ -1,5 +1,5 @@
-import type { AgentDefinition } from "@agora/shared";
-import { appendEvent, matrixWaitForActivityTimeoutMs } from "@agora/shared";
+import type { AgentDefinition, Logger } from "@agora/shared";
+import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
@@ -133,6 +133,7 @@ const STANCE_TOOL: ToolSpec = {
  */
 export class AgentRuntime {
   private currentStance: number;
+  private readonly log: Logger;
   /**
    * The agent's own successfully posted messages (most recent last), kept so
    * it can recognize and avoid restating commitments it has already made.
@@ -193,6 +194,7 @@ export class AgentRuntime {
 
   constructor(private readonly config: AgentRuntimeConfig) {
     this.currentStance = config.agentDef.persona.initialStance;
+    this.log = createLogger(config.agentId);
     if (config.seedMessage) this.ownMessageHistory.push(config.seedMessage);
   }
 
@@ -398,7 +400,7 @@ export class AgentRuntime {
                 this.ownMessageHistory.shift();
               }
             } catch (parseError) {
-              console.error("Failed to parse matrix_send_message response:", resultText);
+              this.log.error("failed to parse matrix_send_message response:", resultText);
               throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
             }
           } else {
@@ -514,17 +516,17 @@ export class AgentRuntime {
         // A dropped long-poll is transient: log and resume waiting rather than
         // letting the agent process die (which would end its half of the Run).
         const delay = waitBackoffDelay(waitBackoff, ++waitFailures);
-        console.error(`[${agentId}] waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
+        this.log.warn(`waiting for room activity failed; will resume waiting in ${delay}ms:`, err);
         await waitBackoff.sleep(delay);
         continue;
       }
 
       if (!hasActivity) continue;
-      await runTurnWithRetry(agentId, turnRetry, () => this.runTurn(), async (err) => {
+      await runTurnWithRetry(this.log, turnRetry, () => this.runTurn(), async (err) => {
         // A turn that throws (an LLM call that outlasted its retries, a send the
         // homeserver rejected) closes its bracket with `agent_turn_failed` so
         // the transcript says why the agent went quiet.
-        console.error(`[${agentId}] turn ${this.turn} failed:`, err);
+        this.log.error(`turn ${this.turn} failed:`, err);
         await appendEvent(this.config.logDir, runId, {
           type: "agent_turn_failed",
           runId,
