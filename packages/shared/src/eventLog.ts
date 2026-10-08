@@ -1,3 +1,9 @@
+/**
+ * The one writer of a Run's event log, `logs/<runId>/events.jsonl`. Every
+ * process that records an event (the runner on the host, each agent and the
+ * Moderator in their containers) goes through appendEvent, which is what
+ * stamps the per-Run `seq` described on SequencedEvent in events.ts.
+ */
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { AgoraEvent } from "./events.js";
@@ -8,12 +14,13 @@ import type { AgoraEvent } from "./events.js";
  * than trusting callers to supply one), so two different runIds get independent
  * counters and events within a runId read back in append order.
  *
- * The counter is process-local: the runner (host) and each agent container
- * write into the same bind-mounted events.jsonl, and each holds its own map.
- * Two processes writing concurrently may therefore assign the same `seq` to two
- * events — a known, accepted limit, because `seq` restores enough ordering to
- * reconstruct what happened without requiring perfect global ordering across
- * every concurrently-writing container (see the always-active ADR).
+ * The counter is process-local: the runner (host) and each agent and Moderator
+ * container write into the same bind-mounted events.jsonl, and each holds its
+ * own map starting from 1. So `seq` is monotonic only among one process's
+ * events, and events from different processes routinely share a `seq` value;
+ * line order in the file is the only cross-process ordering. This is a known,
+ * accepted limit: per-writer ordering is enough to reconstruct what happened
+ * without coordinating a global counter across containers (see ADR-0008).
  */
 const seqByRun: Map<string, number> = new Map();
 
@@ -24,12 +31,13 @@ function nextSeq(runId: string): number {
 }
 
 /**
- * Appends one JSONL event to logDir/<runId>/events.jsonl, assigning its `seq`
- * at write time.
+ * Appends one JSONL event to logDir/<runId>/events.jsonl, creating the Run's
+ * directory if needed and assigning the event's `seq` at write time (any `seq`
+ * the caller passes is overwritten).
  * Called from both the runner (host-side, logDir = <repo>/logs) and each
- * agent container (logDir = /logs, a bind-mounted shared volume), so a
- * single run's transcript+stance history lands in one file regardless of
- * which process wrote it.
+ * agent and Moderator container (logDir = /logs, a bind-mounted shared
+ * volume), so a single Run's full event log -- Transcript messages, stances,
+ * usage, turn brackets -- lands in one file regardless of which process wrote it.
  */
 export async function appendEvent(
   logDir: string,

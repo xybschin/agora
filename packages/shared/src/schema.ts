@@ -1,3 +1,9 @@
+/**
+ * The zod schemas for everything Agora reads from outside the type system: the
+ * Matrix MCP tools' parameters (shared by the MCP server and the agent's MCP
+ * client through matrixToolCatalog), Scenario YAML, and credentials.yaml. The
+ * TypeScript shapes they validate live in types.ts.
+ */
 import { z } from "zod";
 
 // The room is not a tool parameter. It is a property of the Run, fixed when the
@@ -11,7 +17,8 @@ import { z } from "zod";
 // hallucinated identifier.
 //
 // This is the same mistake the design already avoided for identity: identity is
-// bound to the session so a model can never act as another Matrix user. The
+// bound to the caller's access token so a model can never act as another Matrix
+// user. The
 // room belongs in the environment for the same reason and with the same force --
 // it is never a choice, so it should never be a question.
 
@@ -46,7 +53,7 @@ export const matrixAddReactionSchema = z.object({
  * the loop. The agent's MCP client lists it on the server for calling and
  * filters it out of the tool specs advertised to the model. Naming it here
  * keeps the server-registered name and the client-filtered name in lockstep
- * with the catalog entry above.
+ * with the catalog entry in matrixToolCatalog below.
  */
 export const matrixWaitForActivityTool = "matrix_wait_for_activity";
 
@@ -54,9 +61,9 @@ export const matrixWaitForActivityTool = "matrix_wait_for_activity";
  * How long the agent's continuous loop blocks on the room long-poll before
  * giving up and resuming. A bounded value keeps a single wait from pinning the
  * agent forever and bounds how stale the loop's view of the room can get if a
- * wake-up is lost. Stays well under typical homeserver /sync limits (which
- * themselves cap a long-poll at ~30s), so the timeout we ask for is one the
- * homeserver will actually honour rather than close early.
+ * wake-up is lost. It is both the default and the maximum a caller may request
+ * from matrixWaitForActivitySchema, kept at a conventional /sync long-poll
+ * length so the homeserver honours it rather than closing the request early.
  */
 export const matrixWaitForActivityTimeoutMs = 30_000;
 
@@ -71,7 +78,7 @@ export const matrixWaitForActivitySchema = z.object({
   /**
    * The resume token (`next_batch`) from a previous wait, so the next wait
    * starts where the last left off instead of re-reading everything since the
-   * agent joined. Omitted on the first wait of a run.
+   * agent joined. Omitted on the first wait of a Run.
    */
   since: z.string().optional().describe("Resume token from a previous wait (its nextBatch)"),
 });
@@ -210,6 +217,11 @@ export const scenarioConfigSchema = z.object({
   }
 });
 
+/**
+ * Validates an already-YAML-parsed Scenario and fills schema defaults (e.g.
+ * maxToolStepsPerTurn). Unknown keys are rejected (the schema is strict), and a
+ * tick-era Scenario gets a migration message instead of zod's raw error.
+ */
 export function parseScenarioConfig(raw: unknown) {
   try {
     return scenarioConfigSchema.parse(raw);
@@ -271,6 +283,12 @@ const RECENTLY_INTRODUCED_REQUIRED_AGENT_FIELDS: ReadonlySet<string> = new Set([
   "matrixUserId",
 ]);
 
+/**
+ * Validates an already-YAML-parsed credentials.yaml. Unlike the Scenario schema
+ * this one is not strict: unknown keys (a stale room id, a Reader entry) are
+ * stripped rather than rejected, so an over-specified file parses down to the
+ * shape the runner reads.
+ */
 export function parseCredentialsFile(raw: unknown) {
   try {
     return credentialsFileSchema.parse(raw);

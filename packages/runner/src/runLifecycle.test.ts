@@ -1,3 +1,6 @@
+// Pins the terminal-event contract of runLifecycle.ts (ADR-0005): run_started
+// first, exactly one terminal event per Run however many paths race for it,
+// teardown at most once, and each RunOutcome mapped to its event and reason.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -71,9 +74,9 @@ describe("run lifecycle terminal events", () => {
   });
 
   test("a cancel racing the normal path yields one run_aborted, not both", async () => {
-    // The bug this guards: SIGINT during the last tick lets the signal handler
-    // and main() both reach for a terminal event, which used to leave the
-    // transcript carrying a run_aborted and a run_completed at once.
+    // The bug this guards: a SIGINT landing as the Run finishes lets the signal
+    // handler and main() both reach for a terminal event, which used to leave
+    // the transcript carrying an abort and a completion at once.
     const logDir = freshLogDir();
     const { composeDown } = stubComposeDown();
     const lifecycle = createRunLifecycle({ logDir, composeDown });
@@ -106,10 +109,8 @@ describe("run lifecycle terminal events", () => {
     const events = readEvents(logDir, "r1");
     const started = events.find((e) => e.type === "run_started");
     const abort = events.find((e) => e.type === "run_aborted");
-    // The old `tick: -1` sentinel is gone: where the cancel landed in the
-    // stream is carried by the event's own monotonic seq (its seq is after the
-    // run_started that preceded it), and deriveRunStatus no longer reads a tick
-    // off the abort.
+    // ADR-0005's `tick: -1` sentinel is gone. Both events come from the same
+    // writer process, so its seq orders the abort after run_started.
     expect(abort).toEqual(expect.objectContaining({ type: "run_aborted" }));
     expect(abort).not.toHaveProperty("tick");
     expect(Number(abort?.seq)).toBeGreaterThan(Number(started?.seq));

@@ -1,3 +1,7 @@
+// Pins what the operator sees during a Run: each Assessment and failed turn
+// printed exactly once across polls (tracked by position, since seq can repeat),
+// and one warning per Moderator silence of moderatorQuietWarnAfterMs, measured
+// on an injected clock.
 import { describe, expect, test } from "bun:test";
 import type { SequencedEvent } from "@agora/shared";
 import { createModeratorWatch } from "./moderatorWatch.js";

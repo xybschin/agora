@@ -1,3 +1,13 @@
+/**
+ * The runner's view of a live Run, once the containers are up: wait for the
+ * agents to report healthy, then watch the transcript until the Run reaches a
+ * terminal outcome. The runner never drives the agents; they and the Moderator
+ * run their own loops in their containers and talk only through the room, and
+ * everything the runner learns comes from `logs/<runId>/events.jsonl`.
+ *
+ * It decides *that* a Run is over, never records it: the caller (`index.ts`)
+ * turns the returned outcome into the terminal event via `runLifecycle.ts`.
+ */
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -8,6 +18,12 @@ import { createLogger } from "@agora/shared";
 
 const log = createLogger("runner");
 
+/**
+ * Polls each agent's `/health` URL in turn until it answers 2xx. `timeoutMs`
+ * applies to each URL separately, not to the whole set. Throws on the first
+ * URL that misses its deadline. The Moderator exposes no health URL and is not
+ * waited on; `createModeratorWatch` flags it later if it never starts.
+ */
 export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise<void> {
   for (const url of urls) {
     const deadline = Date.now() + timeoutMs;
@@ -27,24 +43,24 @@ export async function waitForHealth(urls: string[], timeoutMs = 60_000): Promise
 }
 
 /**
- * Supervises a Run to its terminal outcome by monitoring the transcript for four
- * conditions:
- * 1. Moderator ending the Run (moderator_ended_run event) → successful completion
- * 2. Wall-clock runtime limit exceeded → aborted (safety backstop)
- * 3. Token budget exceeded → aborted (unchanged from before, now tracked via transcript)
- * 4. Operator cancellation (SIGINT/SIGTERM) → aborted (unchanged)
+ * Polls the transcript until the Run reaches one of four terminal outcomes and
+ * returns it, without writing anything:
+ * 1. `moderator_ended` — the Moderator appended `moderator_ended_run` (the
+ *    normal, successful end);
+ * 2. `wall_clock_exceeded` — more than `scenario.maxRuntimeMs` has passed since
+ *    this call began (the safety backstop);
+ * 3. `budget_exceeded` — charged `usage` events put `budget` over its limit;
+ * 4. `cancelled` — `stopWhen` returned true (the signal handler has claimed the
+ *    Run and records the abort itself).
  *
- * Agents run their own continuous loops independently, driven by Matrix activity.
- * The runner's job is to detect when the Run reaches one of these four terminal
- * conditions and return control to the caller to write the terminal event and tear down.
+ * Each poll checks them in the order cancelled, wall clock, Moderator, budget,
+ * so a Moderator end that lands after the deadline is reported as a wall-clock
+ * timeout. The wall clock starts here, after the containers are healthy, not
+ * at `run_started`.
  *
  * While it supervises, it also shows the operator each Moderator Assessment and
  * each failed turn as it lands, and warns if the Moderator goes quiet (see
- * `createModeratorWatch`).
- *
- * `stopWhen` is checked periodically while supervising (not just at intervals):
- * a cancel is recorded as `cancelled` when detected, and control returns to the caller
- * so the signal handler can write the terminal event.
+ * `createModeratorWatch`; injectable for tests).
  */
 export async function superviseRunToTerminal(params: {
   runId: string;
@@ -71,21 +87,18 @@ export async function superviseRunToTerminal(params: {
   // safe because events.jsonl is append-only.
   let chargedLines = 0;
 
-  const pollIntervalMs = 500; // Poll transcript every 500ms
+  const pollIntervalMs = 500;
 
   for (;;) {
-    // Check for cancellation signal at the top of each poll cycle.
     if (stopWhen?.()) {
       return { outcome: "cancelled" };
     }
 
-    // Check wall-clock runtime limit.
     const elapsedMs = Date.now() - runtimeStartTime;
     if (elapsedMs > scenario.maxRuntimeMs) {
       return { outcome: "wall_clock_exceeded" };
     }
 
-    // Read the transcript and check for terminal events.
     try {
       const events = readTranscriptEvents(transcriptPath);
 
@@ -93,7 +106,6 @@ export async function superviseRunToTerminal(params: {
       // shown too.
       moderatorWatch.observe(events);
 
-      // Check for moderator_ended_run (successful completion).
       for (const event of events) {
         if (event.type === "moderator_ended_run") {
           return {
@@ -115,23 +127,28 @@ export async function superviseRunToTerminal(params: {
       }
       chargedLines = Math.max(chargedLines, events.length);
 
-      // Check for budget exceeded.
       if (budget.isExceeded()) {
         return { outcome: "budget_exceeded" };
       }
     } catch (err) {
-      // Transcript file may not exist yet or may not be readable; keep polling.
+      // readTranscriptEvents already swallows a missing or half-written file;
+      // this guards the rest of the poll, so one bad event is logged and
+      // retried rather than ending supervision.
       log.error("error reading transcript:", err);
     }
 
-    // Sleep before the next poll.
     await sleep(pollIntervalMs);
   }
 }
 
 /**
- * Read all events from a transcript file, parsing each line as JSON.
- * Returns an empty array if the file doesn't exist.
+ * Reads every event in a transcript, one JSON object per line.
+ *
+ * Returns an empty array if the file does not exist yet *or* any line fails to
+ * parse, which happens when a poll catches a writer mid-append. Treating that
+ * poll as empty is safe: both position counters (budget charging and
+ * `moderatorWatch`) only ever move forward, and the next poll sees the
+ * completed line.
  */
 function readTranscriptEvents(transcriptPath: string): SequencedEvent[] {
   try {

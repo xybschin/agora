@@ -1,4 +1,24 @@
 #!/usr/bin/env node
+/**
+ * The `agora` CLI: executes one Scenario as one Run, start to finish.
+ *
+ * Loads the Scenario and credentials, records `run_started`, creates the Run's
+ * room and posts the seed, generates and starts the per-Run compose project,
+ * then supervises until a terminal outcome (Moderator ended the Run, wall-clock
+ * limit, token budget, or a signal) and records it before tearing the
+ * containers down. The Matrix room and `logs/<runId>/` are left in place for
+ * review.
+ *
+ * Kept deliberately thin: it calls `main()` on import, so it cannot be tested.
+ * Everything that decides how the transcript ends lives in `runLifecycle.ts`
+ * and `runAbort.ts`, which can be.
+ *
+ * Exit codes: 0 on any recorded outcome (completed or aborted alike), 1 on an
+ * unhandled error, 130/143 on SIGINT/SIGTERM (ADR-0005). An error thrown after
+ * `run_started` other than a room-setup refusal (e.g. from `seedRoom`,
+ * `composeUp` or `waitForHealth`) records no terminal event, so that Run reads
+ * as incomplete.
+ */
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,8 +111,8 @@ async function main(): Promise<void> {
   // belongs to a Run that actually began, rather than an empty directory.
   await lifecycle.begin(runId);
 
-  // Each Run gets its own room (ADR-0003), so the Scenario is never executed
-  // against a previous Run's Transcript. The room is created here, named for
+  // Each Run gets its own room (ADR-0003), so a Run never starts on top of a
+  // previous Run's Transcript. The room is created here, named for
   // this Run, and admitted to by the roster; the id is a per-Run value from here
   // on rather than something recorded in credentials.yaml.
   //
@@ -102,15 +122,14 @@ async function main(): Promise<void> {
   // rather than in runRoom.ts because this is the module that owns the
   // Transcript, and Run status is read off it: a Run whose Transcript carries a
   // terminal event has a verdict, so without this event a Run stopped for want of
-  // permissions or a Reader would read as merely incomplete. Tick 0 is the honest
-  // value -- the room never got far enough for a tick 1.
+  // permissions or a Reader would read as merely incomplete.
   let roomId: string;
   try {
     roomId = await createRunRoom({ scenario, credentials, runId, readers });
   } catch (err) {
     // Records a terminal `run_aborted` (and prints the readable per-run message)
-    // for the abort-worthy room-setup failures; any other error is rethrown
-    // unchanged.
+    // for the abort-worthy room-setup failures and records nothing for any
+    // other error. Either way the error is rethrown, so the process exits 1.
     await recordRoomSetupAbort(lifecycle, runId, err);
     throw err;
   }
@@ -156,9 +175,8 @@ async function main(): Promise<void> {
     });
 
     if (result.outcome === "cancelled") {
-      // The signal handler owns writing the terminal event; returning here stops
-      // the supervision and makes the runner's own branch agree, while
-      // recordTerminal declines to write a second one.
+      // The signal handler owns writing the terminal event (and exits the
+      // process once it has torn down), so this branch records nothing.
       log.warn("Run cancelled via signal; see run_aborted in the transcript.");
     } else if (result.outcome === "moderator_ended") {
       log.info(

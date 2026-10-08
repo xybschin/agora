@@ -69,7 +69,7 @@ describe("runRoomPowerLevels", () => {
     // The setup account owns the room as its creator, and Synapse refuses a
     // power-levels event whose `users` names the creator ("Creator user ... must
     // not appear in content.users") because a creator's 100 is immutable and not
-    // an event entry. A live Run died on exactly that 400 (ADR-0003). So the
+    // an event entry. A live Run died on exactly that 400. So the
     // owner's 100 is the homeserver's creator rule, and the written event names
     // it nowhere — which is what this pins down.
     expect(Object.keys(wanted.users)).not.toContain("@agora-setup:localhost");

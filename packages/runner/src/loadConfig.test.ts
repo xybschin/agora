@@ -1,3 +1,6 @@
+// Pins the runner's config loading against real files on disk: the shipped
+// credentials template must parse, and the local Reader list must treat absence
+// and emptiness as "no Readers" while rejecting anything malformed.
 import { afterEach, describe, expect, test } from "bun:test";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,11 +78,10 @@ describe("loadLocalReaders", () => {
   test("a missing local file means no Readers, so a fresh clone runs with none", async () => {
     // The local source is git-ignored, so on a fresh clone it is absent. A
     // missing file must read as no Readers -- identical to a Scenario that names
-    // none -- not as an error, or every clone would still die at tick 0.
+    // none -- not as an error, or every clone would die before its room exists.
     const dir = freshDir();
-    // There may be a real readers.local.yaml in the repo root the user has not
-    // git-ignored-committed; that is fine, this test points at a path that cannot
-    // exist.
+    // A real readers.local.yaml may sit at the repo root; this test points at a
+    // path that cannot exist, so it is unaffected.
     const filename = join(dir, `missing-${Date.now()}.yaml`);
     expect(await loadLocalReaders(filename)).toEqual([]);
   });

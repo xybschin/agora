@@ -1,8 +1,18 @@
+/**
+ * The event vocabulary of a Run's event log (`logs/<runId>/events.jsonl`).
+ * `AgoraEvent` is the closed union every writer constructs and every reader
+ * switches on; eventLog.ts appends them, and runAnalysis.ts reads a Run status
+ * back off them. Only `message` events make up the Transcript; the rest are
+ * stances, usage, lifecycle markers, turn brackets and Moderator bookkeeping
+ * recorded alongside it.
+ */
+/** Fields every event carries. `timestamp` is an ISO-8601 string set by the writer. */
 interface BaseEvent {
   runId: string;
   timestamp: string;
 }
 
+/** One message posted to the Run's room; the unit of the Transcript. */
 export interface MessageEvent extends BaseEvent {
   type: "message";
   agentId: string;
@@ -12,6 +22,7 @@ export interface MessageEvent extends BaseEvent {
   replyToEventId?: string;
 }
 
+/** An agent's recorded private stance on the topic, -1 (against) to +1 (in favor). */
 export interface StanceEvent extends BaseEvent {
   type: "stance";
   agentId: string;
@@ -19,6 +30,7 @@ export interface StanceEvent extends BaseEvent {
   rationale?: string;
 }
 
+/** Token usage of one LLM call, which the runner sums to enforce the Scenario's budget. */
 export interface UsageEvent extends BaseEvent {
   type: "usage";
   agentId: string;
@@ -26,14 +38,29 @@ export interface UsageEvent extends BaseEvent {
   completionTokens: number;
 }
 
+/**
+ * Written by the runner before anything that can fail, so a Run with no
+ * terminal event after it reads as incomplete rather than as nothing (see
+ * ADR-0005).
+ */
 export interface RunStartedEvent extends BaseEvent {
   type: "run_started";
 }
 
+/**
+ * Terminal: the Run completed. Still read by deriveRunStatus and by the
+ * runner's reclaim command, but no current code path writes it: a Run the
+ * Moderator ends records `moderator_ended_run` instead.
+ */
 export interface RunCompletedEvent extends BaseEvent {
   type: "run_completed";
 }
 
+/**
+ * Terminal: the Run was stopped. `reason` names the cause (room permissions
+ * refused, token budget exceeded, wall-clock runtime limit exceeded, or a
+ * SIGINT/SIGTERM cancel).
+ */
 export interface RunAbortedEvent extends BaseEvent {
   type: "run_aborted";
   reason: string;
@@ -44,7 +71,7 @@ export interface RunAbortedEvent extends BaseEvent {
  * at 1, independent per agent and per Run. Together with `agent_heartbeat`
  * these replace the old global `tick_start`/`tick_end` bracket as the per-agent
  * liveness evidence: with no shared tick to group events by, each agent's
- * activity is delimited by its own turn pair (see the always-active ADR). A
+ * activity is delimited by its own turn pair (see ADR-0008). A
  * turn that throws closes with `agent_turn_failed` instead of `agent_turn_ended`.
  */
 export interface AgentTurnStartedEvent extends BaseEvent {
@@ -88,8 +115,10 @@ export interface AgentHeartbeatEvent extends BaseEvent {
 }
 
 /**
- * The Moderator's classification of the discussion as ACTIVE or STALE, recorded
- * after reading the room's recent activity. Exactly one per assessment cycle.
+ * The verdict and rationale of one Moderator Assessment: ACTIVE or STALE.
+ * Written each time the Moderator's model makes a valid classify_discussion
+ * call, which is normally once per Assessment. A STALE verdict the Moderator
+ * refuses (because some roster agent has not posted yet) is recorded as ACTIVE.
  */
 export interface ModeratorClassificationEvent extends BaseEvent {
   type: "moderator_classification";
@@ -112,8 +141,9 @@ export interface ModeratorToolCallEvent extends BaseEvent {
 }
 
 /**
- * Recorded when the Moderator ends the Run after classifying the discussion STALE.
- * This is a terminal outcome distinct from wall-clock or budget backstops firing.
+ * Terminal: the Moderator ended the Run after a STALE Assessment and posted its
+ * closing message. This is the normal way a Run completes, distinct from the
+ * wall-clock and budget backstops, which record `run_aborted`.
  */
 export interface RunCompletedByModeratorEvent extends BaseEvent {
   type: "moderator_ended_run";
@@ -137,8 +167,9 @@ export type AgoraEvent =
   | RunCompletedByModeratorEvent;
 
 /**
- * An event as it appears on disk: every write carries a monotonic per-Run `seq`
- * assigned by the event-log writer at append time (see eventLog.ts). Writers
+ * An event as it appears on disk: every write carries a `seq` assigned by the
+ * event-log writer at append time. `seq` is monotonic per writing process, not
+ * across the whole Run (see eventLog.ts). Writers
  * construct `AgoraEvent` (without `seq`); readers of a transcript read
  * `SequencedEvent`.
  */

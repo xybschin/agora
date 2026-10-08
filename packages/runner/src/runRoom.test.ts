@@ -8,8 +8,8 @@ import { clientPath } from "./matrixRooms.js";
 // permissions, and hands the resulting id on. That lifecycle is what these tests
 // pin down -- the room's name, the create-then-admit-then-pin ordering, the
 // exact power levels written and read back, and the Readers the Scenario
-// declares being invited last, into a room whose permissions are already known.
-// The fact that a second Run of the same Scenario lands in a different room with
+// declares being invited last, into a room whose permissions are already known
+// -- and that a second Run of the same Scenario lands in a different room with
 // nothing of the first Run's history in it.
 
 interface FetchCall {
@@ -279,7 +279,7 @@ describe("createRunRoom", () => {
     // first live Run failed here: this call site read `.content` off the
     // response, but GET /rooms/{id}/state/m.room.power_levels answers with the
     // state event's content on its own, so `.content` was undefined and every
-    // Run refused itself at tick 0. The stub had been answering with a
+    // Run refused itself during room setup. The stub had been answering with a
     // `content` wrapper, so it agreed with the call site rather than with the
     // API and the whole suite stayed green.
     //
@@ -397,8 +397,9 @@ describe("createRunRoom", () => {
     // starts; nothing the second Run does reaches back into it, so an agent in
     // the second Run cannot read the first Run's Transcript. Its createRoom call
     // is the only second-Run call that doesn't name a room.
-    // First run now has 9 calls (was 7, but now includes setDisplayName + setup join).
-    // The second run starts at index 9, so there should be 9 more calls after the first.
+    // Each Run makes the same 9 calls as the ordering test above (create,
+    // display name, Moderator join, two invite/join pairs, power levels PUT and
+    // GET), so the second Run's calls start at index 9.
     const secondRunStartIndex = 9;
     const secondRunCalls = calls.slice(secondRunStartIndex);
     expect(secondRunCalls.length).toBe(9);

@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getMatrixClient } from "./matrixPool.js";
 
+// Pins getMatrixClient's contract: the homeserver URL is required, normalised,
+// and read at call time, and the token passes through unchanged.
+//
 // The MCP server talks to Matrix on behalf of an agent, and every request it
 // makes carries that agent's access token. So an unconfigured homeserver is
 // not an inconvenience to paper over with a default: falling back to a public
-// homeserver would offer a live agent's token to a server the run never
+// homeserver would offer a live agent's token to a server the Run never
 // provisioned. The URL therefore has to be required, the same way the agent
-// requires its own Matrix variables (config.ts's requireEnv). What the run is
+// requires its own Matrix variables (packages/agent/src/config.ts's requireEnv). What the Run is
 // pointed at differs between the host and a container, so there is no default
 // that is right in both places and none at all.
 

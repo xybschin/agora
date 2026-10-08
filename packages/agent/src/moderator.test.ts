@@ -1,3 +1,9 @@
+// Pins the Moderator's contract: an Assessment posts only after a STALE
+// verdict, and only a posted closing message ends the Run; every tool call and
+// verdict lands in the event log; STALE is refused until every roster agent
+// has spoken; and the loop reassesses a quiet room, retries failed
+// Assessments without double-posting, and backs off failed waits. These are
+// the only guards between a model's judgment and ending a Run early or never.
 import { describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -69,7 +75,6 @@ function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
   return { role: "assistant", content: tool_calls ? "thinking..." : "done", tool_calls };
 }
 
-// MCP stub for tests
 interface McpStub {
   listToolSpecs: () => Promise<ToolSpec[]>;
   callTool: (name: string, args: Record<string, unknown>) => Promise<string>;
@@ -126,7 +131,6 @@ describe("ModeratorRuntime", () => {
       expect(result.classification).toBe("active");
       expect(result.shouldEnd).toBe(false);
 
-      // Read the event log to verify no message was posted.
       const eventsPath = path.join(logDir, RUN_ID, "events.jsonl");
       const content = await readFile(eventsPath, "utf-8");
       const events = content
@@ -134,8 +138,6 @@ describe("ModeratorRuntime", () => {
         .split("\n")
         .map((line) => JSON.parse(line));
 
-      // Should have: heartbeat (active), classification (active).
-      // Must NOT have a message event.
       const messageEvents = events.filter((e) => e.type === "message");
       expect(messageEvents).toHaveLength(0);
     });
@@ -176,7 +178,6 @@ describe("ModeratorRuntime", () => {
         .split("\n")
         .map((line) => JSON.parse(line));
 
-      // Verify the closing message event and the moderator_ended_run event exist.
       const messageEvent = events.find((e) => e.type === "message" && e.agentId === "moderator");
       expect(messageEvent).toBeDefined();
       expect(messageEvent?.content).toBe(closingMessage);
@@ -228,10 +229,8 @@ describe("ModeratorRuntime", () => {
     test("classification must be called before any send attempt", async () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
 
-      // Script a message send without first classifying: the model should
-      // not be able to skip classification and jump straight to posting.
-      // However, since we can't prevent the model from attempting it,
-      // we test that the runtime catches it.
+      // The model cannot be stopped from trying to post before classifying, so
+      // the runtime must reject that send and still accept the one after STALE.
       script = [
         assistant([sendCall("Attempting to post without classifying")]),
         assistant([classifyCall("stale", "Just classified after attempting send")]),
@@ -255,8 +254,6 @@ describe("ModeratorRuntime", () => {
 
       const result = await runtime.runTurn();
 
-      // The turn should complete; the first send (before classification) was rejected,
-      // but the second send (after STALE) should succeed.
       const eventsPath = path.join(logDir, RUN_ID, "events.jsonl");
       const content = await readFile(eventsPath, "utf-8");
       const events = content
@@ -264,7 +261,6 @@ describe("ModeratorRuntime", () => {
         .split("\n")
         .map((line) => JSON.parse(line));
 
-      // Should have exactly one message event (the one posted after STALE).
       const messageEvents = events.filter((e) => e.type === "message");
       expect(messageEvents).toHaveLength(1);
     });
@@ -425,6 +421,8 @@ describe("ModeratorRuntime", () => {
     });
   });
 
+  // The model is scripted, so these pin only that the runtime acts on the
+  // verdict it is given, not that a real model judges conflict as ACTIVE.
   describe("disagreement and conflict handling", () => {
     test("conflict/hostility in room content is classified ACTIVE", async () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
@@ -514,13 +512,12 @@ describe("ModeratorRuntime", () => {
         llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
         waitTimeoutMs: 100,
         isStopped: () => {
-          // Fail-safe: if the loop doesn't exit after 3 iterations, force stop.
+          // Fail-safe: stop before a third iteration if the loop has not exited.
           loopIterations++;
           return loopIterations > 2;
         },
       });
 
-      // Override waitForActivity to track calls
       let waitCalls = 0;
       const originalWait = mcp.waitForActivity;
       mcp.waitForActivity = async (args) => {
@@ -528,7 +525,6 @@ describe("ModeratorRuntime", () => {
         return originalWait(args);
       };
 
-      // Also override the send to return a valid event.
       const originalCall = mcp.callTool;
       mcp.callTool = async (name, args) => {
         if (name === "matrix_send_message") {
@@ -1252,7 +1248,8 @@ describe("ModeratorRuntime", () => {
     }
 
     test("is refused, naming the silent agents, and recorded as ACTIVE", async () => {
-      // Only the Seed message and alex have posted; a reaction is not a post.
+      // Only the setup account (not in the roster) and alex have posted; bri's
+      // reaction is not a post.
       const room = JSON.parse(roomWith([SETUP_USER_ID, "@agora-alex:example.com"])) as unknown[];
       room.push({
         eventId: "$r",

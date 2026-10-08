@@ -1,9 +1,15 @@
+/**
+ * Turns a Scenario plus credentials into the docker-compose project for one
+ * Run: one container per roster agent, one shared MCP server, and the
+ * Moderator. Pure: it returns YAML text and `index.ts` writes it to
+ * `runner-generated/docker-compose.<runId>.yml`.
+ */
 import yaml from "js-yaml";
 import type { ScenarioConfig, CredentialsFile, RosterAgent } from "@agora/shared";
 
 export interface ComposeGenerationResult {
   yamlText: string;
-  /** agentId -> host port for the runner's health check probe. */
+  /** agentId -> host port for the runner's health check probe. Agents only; the Moderator has no port. */
   agentPorts: Record<string, number>;
 }
 
@@ -19,6 +25,12 @@ export interface ComposeGenerationResult {
  * the self-hosted Synapse by container DNS name, using
  * `matrix.containerBaseUrl` (e.g. http://synapse:8008) rather than the
  * host-facing `matrix.hostBaseUrl` that the runner itself uses.
+ *
+ * Relative paths (`..` build context, `../logs` volume) are resolved by compose
+ * against the file's own directory, so they assume the file lives one level
+ * below the repo root, where `index.ts` puts it.
+ *
+ * Throws if a roster agent has no credentials entry.
  */
 export function generateComposeFile(params: {
   runId: string;
@@ -26,6 +38,7 @@ export function generateComposeFile(params: {
   roomId: string;
   scenario: ScenarioConfig;
   credentials: CredentialsFile;
+  /** Host port for the first agent; the rest get consecutive ports in roster order. */
   basePort?: number;
 }): ComposeGenerationResult {
   const { runId, roomId, scenario, credentials } = params;
@@ -77,6 +90,8 @@ export function generateComposeFile(params: {
         // Containers reach the self-hosted Synapse over the shared infra
         // network, so they use the container-facing base URL, not the host one.
         MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
+        // The per-turn tool-step cap; the variable keeps its tick-era name
+        // because the agent's config still reads it under that name.
         MAX_TOOL_STEPS_PER_TICK: String(scenario.maxToolStepsPerTurn),
         MCP_URL: "http://mcp_server:3000/mcp",
         LLM_BASE_URL: cred.llmBaseUrl,
@@ -114,7 +129,8 @@ export function generateComposeFile(params: {
   };
 
   // The Moderator service runs the setup account's continuous assessment loop.
-  // It shares the MCP server with agents and inherits the room id via environment.
+  // It joins every agent network, as mcp_server does, so it can reach the
+  // shared MCP server, and writes to the same logs volume.
   services.moderator = {
     build: { context: "..", dockerfile: "docker/moderator.Dockerfile" },
     networks: mcpNetworksWithInfra,
@@ -130,6 +146,9 @@ export function generateComposeFile(params: {
       // The Scenario's roster, so the Moderator can tell which agents have
       // posted in the room.
       ROSTER_JSON: JSON.stringify(roster),
+      // The Moderator's Assessments are LLM calls, but the credentials file has
+      // no entry for it, so it borrows the first roster agent's endpoint, key
+      // and model. The literal fallbacks only apply to an empty roster.
       LLM_BASE_URL: credentials.agents[scenario.agents[0]?.id || ""]?.llmBaseUrl || "http://localhost",
       LLM_API_KEY: credentials.agents[scenario.agents[0]?.id || ""]?.llmApiKey || "test",
       LLM_MODEL: credentials.agents[scenario.agents[0]?.id || ""]?.llmModel || "test",

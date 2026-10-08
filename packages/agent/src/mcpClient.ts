@@ -1,3 +1,9 @@
+/**
+ * The agent side of the MCP connection to mcp_server, through which every
+ * Matrix action reaches the room. Used by both the agent loop (loop.ts) and
+ * the Moderator (moderator.ts): it advertises the model-facing tools and
+ * exposes the runtime-only long-poll for room activity.
+ */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { matrixToolCatalog, matrixWaitForActivityTool } from "@agora/shared";
@@ -6,7 +12,7 @@ import type { ToolSpec } from "./llm.js";
 /**
  * Thin wrapper around the MCP client that authenticates every connection
  * with this agent's own Matrix access token (Q7: identity bound to the
- * session, never passed as a tool argument). The token is the only identity
+ * connection, never passed as a tool argument). The token is the only identity
  * sent: the server resolves who the caller is from it (GET /account/whoami),
  * so there is no user-id header for a client to assert (agora-2ja).
  */
@@ -54,6 +60,12 @@ export class MatrixMcpClient {
       }));
   }
 
+  /**
+   * Calls a tool on the server, connecting first if needed. Returns the
+   * result's first text part, or the whole result as JSON when it has none.
+   * A tool-level error result comes back as text like any other; only a
+   * client/transport failure throws, wrapped with the tool's name.
+   */
   async callTool(name: string, args: Record<string, unknown>): Promise<string> {
     await this.connect();
     try {

@@ -1,3 +1,7 @@
+// Pins the runId format (formatRunId/parseRunId must round-trip, since reclaim
+// recovers a Run's Scenario from its runId) and how deriveRunStatus reads a Run
+// status off an event log, including the legacy tick-count fallback.
+
 import { describe, expect, test } from "bun:test";
 import { deriveRunStatus, formatRunId, parseRunId } from "./runAnalysis.js";
 import type { AgoraEvent } from "./events.js";
@@ -74,15 +78,12 @@ describe("formatRunId / parseRunId round-trip", () => {
   });
 });
 
-// A Run's verdict is recorded, not inferred: the runner writes exactly one
-// terminal event, either "run_completed" (packages/runner/src/index.ts, after
-// runTicks returns un-aborted) or "run_aborted" (on refusal or on a
-// SIGINT/SIGTERM cancel). "run_started" marks a transcript as belonging to the
-// new vocabulary. Per turn, agents append "stance"/"usage"/"message" plus
-// "agent_turn_started"/"agent_turn_ended" brackets (packages/agent/src/loop.ts).
-// deriveRunStatus returns only a status: the transcript's ordering/coverage is
-// carried by the per-event `seq` stamped at write time, and "how far it got" is
-// `ticksRun` bookkeeping held by the runner, not read off the log.
+// A Run status is recorded, not inferred: the runner writes exactly one
+// terminal event per Run (packages/runner/src/runLifecycle.ts). "run_started"
+// marks an event log as belonging to the new vocabulary. Per turn, agents
+// append "stance"/"usage"/"message" plus "agent_turn_started"/"agent_turn_ended"
+// brackets (packages/agent/src/loop.ts). deriveRunStatus returns only a status;
+// ordering is carried by the per-event `seq` stamped at write time.
 function stance(): AgoraEvent {
   return { type: "stance", runId: "r", agentId: "a", stance: 0, timestamp: "t" };
 }

@@ -12,12 +12,12 @@ import {
 } from "./reclaim.js";
 
 /**
- * Reclamation is explicit and gated on a terminal verdict. These tests pin the
- * derive-then-act rule the ticket demands: a transcript with no terminal event
+ * Reclamation is explicit and gated on a terminal verdict (ADR-0006). These
+ * tests pin the derive-then-act rule: a transcript with no terminal event
  * (`run_completed` or `run_aborted`) is `incomplete` — the ambiguous hard-crash
  * signature — and is never eligible, on disk or in the room. They run entirely
- * off the logs (ADR-0001: no metadata store) and against a stubbed homeserver,
- * so no live homeserver is needed.
+ * off temporary log directories (no metadata store) and against a stubbed
+ * homeserver, so no live homeserver is needed.
  */
 
 let tempDir: string;
@@ -117,7 +117,7 @@ describe("readRunTranscript / listRunIds", () => {
 
 describe("reclaimRun", () => {
   // A room named "Agora - <scenario> - <runId>" is the join between a Run and
-  // its room (ADR-0003): the runId (the logs/<runId> directory name) resolves
+  // its room (ADR-0006): the runId (the logs/<runId> directory name) resolves
   // to the room by that naming convention against the homeserver's public room
   // directory. It must not depend on the transcript's message events, so a Run
   // that never sent a message still resolves.

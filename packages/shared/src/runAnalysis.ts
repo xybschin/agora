@@ -1,3 +1,8 @@
+/**
+ * Run identity and Run status: how a runId is formed and taken apart, and how a
+ * Run's status is read back off its event log after the fact. Pure functions
+ * with no I/O; callers load the events themselves.
+ */
 import type { AgoraEvent } from "./events.js";
 
 /**
@@ -41,8 +46,8 @@ export function parseRunId(runId: string): { scenarioName: string; timestamp: st
 export type RunStatus = "aborted" | "completed" | "incomplete";
 
 /**
- * Reads a Run's verdict off its transcript, in the vocabulary the runner now
- * records rather than infers (packages/runner/src/index.ts):
+ * Reads a Run status off its event log, from the terminal events the runner
+ * records (packages/runner/src/runLifecycle.ts) rather than by inference:
  *
  * - `run_aborted` wins over everything, including a `run_completed` in the
  *   same file. Both together is malformed, and "stopped" is the reading an
@@ -61,7 +66,12 @@ export type RunStatus = "aborted" | "completed" | "incomplete";
  * Transcripts written before `run_started`/`run_completed` existed carry
  * neither, and recorded success only implicitly, so they keep the old
  * tick-count inference — otherwise every Run on disk would regress to
- * `incomplete` the day this vocabulary ships.
+ * `incomplete` the day this vocabulary ships. `totalTicks` is the legacy
+ * Scenario's final tick and is read only on that path.
+ *
+ * Known gap: `moderator_ended_run`, which is how a Moderator-ended Run now
+ * records its ending, is not read here, so such a Run currently reports
+ * `incomplete` even though the glossary counts it as completed.
  */
 export function deriveRunStatus(
   events: AgoraEvent[],

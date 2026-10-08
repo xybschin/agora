@@ -1,3 +1,8 @@
+// Pins how appendEvent stamps `seq`: monotonic per runId within one process,
+// independent across runIds, and applied to every event type. Transcript
+// readers order a Run's events by this field, so a regression here silently
+// scrambles them.
+
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

@@ -1,3 +1,10 @@
+// Pins matrixActions' contracts against a recorded fetch: readRoom marks only
+// the token owner's messages as its own and resolves display names,
+// waitForActivity long-polls /sync without ever sending the room id,
+// sendMessage quotes the original in a rich reply (or degrades to a bare
+// reply), and stripQuote drops agent-written quotes. Two suites also check the agent's system prompt
+// (persona.ts), because the own-message marking and stance only work if the
+// prompt explains them.
 import { afterEach, describe, test, expect } from "bun:test";
 import { sendMessage, stripQuote } from "./matrixActions.js";
 
@@ -169,7 +176,8 @@ describe("stance continuity across ticks", () => {
       initialStance: 0.2,
     };
 
-    // On first tick with no current stance, should show initial
+    // On the agent's first turn (isFirstTick) with no current stance, the
+    // prompt shows the initial stance.
     const prompt1 = buildSystemPrompt({
       persona: mockPersona,
       topic: "test",
@@ -178,7 +186,7 @@ describe("stance continuity across ticks", () => {
     expect(prompt1).toContain("Your current private stance on the topic is 0.2");
     expect(prompt1).toContain("(you started at 0.2)");
 
-    // On subsequent tick with evolved stance, should show current
+    // On later turns with an evolved stance, it shows the current one.
     const prompt2 = buildSystemPrompt({
       persona: mockPersona,
       topic: "test",
@@ -190,8 +198,9 @@ describe("stance continuity across ticks", () => {
   });
 
   test("stance can drift across ticks without resetting to initial", async () => {
-    // Verify the contract: agent stance is maintained in AgentRuntime.currentStance
-    // and fed back into buildSystemPrompt each tick, so it drifts and is not reset
+    // The contract: AgentRuntime (loop.ts) keeps the agent's current stance and
+    // feeds it back into buildSystemPrompt each turn, so it drifts and is not
+    // reset.
     const { buildSystemPrompt } = await import("../../agent/src/persona.js");
 
     const mockPersona = {
@@ -201,7 +210,7 @@ describe("stance continuity across ticks", () => {
       initialStance: 0.2,
     };
 
-    // Simulate stance drifting across ticks: 0.2 -> 0.3 -> 0.5 -> 0.7
+    // Simulate stance drifting across turns: 0.2 -> 0.3 -> 0.5 -> 0.7
     const driftedStances = [0.3, 0.5, 0.7];
 
     for (const stance of driftedStances) {
@@ -212,9 +221,9 @@ describe("stance continuity across ticks", () => {
         isFirstTick: false,
       });
 
-      // Each tick should reflect the current stance, not reset to 0.2
+      // Each turn reflects the current stance, not a reset to the initial one.
       expect(prompt).toContain(`Your current private stance on the topic is ${stance}`);
-      expect(prompt).not.toContain("(you started at"); // No reminder on non-first ticks
+      expect(prompt).not.toContain("(you started at"); // No reminder after the first turn
     }
   });
 });

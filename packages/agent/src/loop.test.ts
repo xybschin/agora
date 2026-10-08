@@ -1,3 +1,10 @@
+/**
+ * Pins the agent runtime's (loop.ts) behaviour: the Own message history queue,
+ * the system prompt and per-turn message it feeds the model, new-message
+ * counting, the guards that keep a malformed tool call from dropping a Turn or
+ * corrupting the stance, the Turn bracket events, and runLoop's recovery from
+ * failed waits and failed turns.
+ */
 import { describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +19,7 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 // failure paths are both reachable without a real homeserver.
 //
 // The mock replays a scripted list of assistant messages, one per
-// chatCompletion call; a message with no tool_calls ends the tick. A scripted
+// chatCompletion call; a message with no tool_calls ends the turn. A scripted
 // Error is thrown instead, standing in for a provider failure that outlasted
 // chatCompletion's own retries.
 type ScriptedMessage = ChatMessage & { tool_calls?: ToolCall[] };
@@ -149,8 +156,8 @@ describe("AgentRuntime own message history", () => {
 
   test("a malformed send (missing content) is returned to the model to self-correct, not thrown", async () => {
     // Script the model first calling matrix_send_message with no body, then --
-    // on seeing the rejection -- retrying with a real message. The tick must
-    // survive the malformed call (the run was failing every tick on exactly
+    // on seeing the rejection -- retrying with a real message. The turn must
+    // survive the malformed call (the run was failing every turn on exactly
     // this), and the corrected message must be the only thing posted.
     script = [
       assistant([rawSendCall(JSON.stringify({ replyToEventId: "$earlier" }))]),
@@ -207,7 +214,7 @@ describe("AgentRuntime own message history", () => {
       agentDef: { ...AGENT, id: "bob", persona: { ...AGENT.persona, displayName: "Bob" } },
     });
 
-    // Only alice drives a tick; bob never posts and must not see her memory.
+    // Only alice takes a turn; bob never posts and must not see her memory.
     await alice.runTurn();
 
     expect(alice.getOwnMessageHistory()).toEqual(["Alice posts"]);
@@ -247,7 +254,7 @@ describe("AgentRuntime own message history", () => {
   });
 
   test("the queue is bounded to the most recent posts, dropping the oldest", async () => {
-    // Post four messages in one tick; the queue must keep only the last three
+    // Post four messages in one turn; the queue must keep only the last three
     // and forget the first (which is still visible in room history if read).
     script = [
       assistant([sendCall("one"), sendCall("two"), sendCall("three"), sendCall("four")]),
@@ -467,9 +474,9 @@ describe("buildTurnMessage", () => {
 
 describe("AgentRuntime new-message tracking", () => {
   test("reports messages that arrived between turns as new", async () => {
-    // The runtime counts the room itself at the start of each tick. Tick 1
+    // The runtime counts the room itself at the start of each turn. Turn 1
     // starts a fresh run, so it reports nothing new; 3 messages arrive before
-    // tick 2, and its message reports 3 new.
+    // turn 2, and its message reports 3 new.
     let reads = 0;
     mcp.callTool = async (name: string) => {
       if (name !== "matrix_read_room") return "{}";
@@ -576,13 +583,13 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
 
   test("a prior valid stance endures a malformed call and the prompt stays NaN-free", async () => {
     const { runtime } = await stanceEventsAfter([
-      // Tick 1: a valid move to 0.8.
+      // Turn 1: a valid move to 0.8.
       assistant([rawStanceCall(JSON.stringify({ stance: 0.8 }))]),
       assistant(),
     ]);
     expect(runtime.getStance()).toBe(0.8);
 
-    // Now drive another real tick in which the model emits a malformed stance.
+    // Now drive another real turn in which the model emits a malformed stance.
     // The prior 0.8 (not NaN) must survive, and the system prompt rendered from
     // that persisted stance must not leak "NaN".
     script = [assistant([rawStanceCall(JSON.stringify({ stance: "0.5x" }))]), assistant()];

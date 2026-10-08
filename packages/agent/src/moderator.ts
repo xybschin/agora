@@ -1,3 +1,20 @@
+/**
+ * The Moderator's runtime: the one participant that decides when a Run is
+ * over. It waits on room activity like an agent, and on each wake (or after
+ * the room has stayed quiet long enough) runs one Assessment: an LLM tool loop
+ * that reads the room and calls `classify_discussion` with ACTIVE or STALE.
+ * Only a STALE Assessment may post, and that post is the Moderator's single
+ * closing message; recording `moderator_ended_run` after it is what the runner
+ * treats as a completed Run. Assessments go to the event log only, never to
+ * the room, so the agents cannot react to being judged.
+ *
+ * Unlike ADR-0008's original sketch, the Moderator does make LLM calls: the
+ * Assessment itself is the model's judgment, constrained by the gates below.
+ *
+ * Wired up by moderator-index.ts from the env in moderator-config.ts; shares
+ * turnRetry.ts and waitBackoff.ts with the agent loop (loop.ts), and reads
+ * agents' open turns from the event log via turnsInFlight.ts.
+ */
 import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
 import type { MatrixMcpClient } from "./mcpClient.js";
@@ -22,8 +39,9 @@ export interface ModeratorRuntimeConfig {
   llm: LlmConfig;
   /**
    * How long each long-poll for new room activity blocks before the loop gives
-   * up and re-waits. Defaults to the shared tool's max (30s) but is injected so
-   * tests can drive the loop with a short wait.
+   * up and re-waits. Defaults to the shared tool's max
+   * (`matrixWaitForActivityTimeoutMs`) but is injected so tests can drive the
+   * loop with a short wait.
    */
   waitTimeoutMs?: number;
   /**
@@ -48,6 +66,12 @@ export interface ModeratorRuntimeConfig {
   waitBackoff?: Partial<WaitBackoffOptions>;
 }
 
+/**
+ * The outcome of one Assessment. `classification` is the recorded verdict (a
+ * refused or missing STALE comes back as "active"). `shouldEnd` is true only
+ * when the verdict is STALE *and* the closing message was posted; a STALE
+ * Assessment that never posted does not end the Run.
+ */
 export interface ModeratorTurnResult {
   classification: "active" | "stale";
   shouldEnd: boolean;
@@ -94,10 +118,10 @@ const CLASSIFY_TOOL: ToolSpec = {
 };
 
 /**
- * The Moderator's system prompt instructs it to read the room, classify the
- * discussion, and either post nothing (ACTIVE) or compose a closing message (STALE).
- * The prompt structure ensures the classification decision comes first, and the
- * message-posting path is only reachable from STALE.
+ * The Moderator's system prompt: read the room, classify the discussion, and
+ * either post nothing (ACTIVE) or compose a closing message (STALE). The prompt
+ * only states the classify-before-post rule; runTurn enforces it by rejecting
+ * any matrix_send_message that is not preceded by a STALE classification.
  */
 function buildModeratorSystemPrompt(params: {
   topic: string;
@@ -281,7 +305,9 @@ export class ModeratorRuntime {
   private readonly speakers = new Set<string>();
 
   /**
-   * Best-effort count of messages currently in the room.
+   * Best-effort count of messages currently in the room, or null when the read
+   * fails. Reads at most 100 messages, so a longer room is counted as 100. As a
+   * side effect, records every sender seen (see `speakers`).
    */
   private async countRoomMessages(): Promise<number | null> {
     try {
@@ -354,10 +380,16 @@ export class ModeratorRuntime {
   }
 
   /**
-   * Runs the Moderator's assessment turn: reads the room, classifies the
-   * discussion, and if STALE, posts a closing message and signals that the
-   * Run should end. `quietForMs` is set when the turn was triggered by the room
-   * staying silent rather than by new activity.
+   * Runs one Assessment: the model reads the room, classifies the discussion,
+   * and if STALE, posts the closing message. `quietForMs` is set when the
+   * Assessment was triggered by the room staying silent rather than by new
+   * activity.
+   *
+   * Side effects: posts to the room (STALE only) and appends `agent_heartbeat`,
+   * `moderator_tool_call`, `moderator_classification`, `message` and
+   * `moderator_ended_run` events to the Run's event log. Throws when the LLM
+   * call or a room read fails, or when the post's response cannot be parsed;
+   * runLoop records and retries those.
    */
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
     const { runId, topic, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
@@ -406,10 +438,11 @@ export class ModeratorRuntime {
     let classified = false;
     let closingMessageId: string | null = null;
 
-    // The tool-calling loop. The model must call classify_discussion exactly once.
-    // Only after a STALE classification can it call matrix_send_message.
+    // The model should call classify_discussion once per Assessment, and may
+    // call matrix_send_message only after a STALE one. The step cap guards
+    // against runaway tool calling; the Assessment ends early as soon as the
+    // model replies without tool calls.
     for (let step = 0; step < 10; step++) {
-      // Safety cap on tool calls to prevent runaway loops
       const { message } = await chatCompletion(llm, messages, tools);
       messages.push(message);
 
@@ -428,7 +461,6 @@ export class ModeratorRuntime {
         let resultText: string;
 
         if (call.function.name === "classify_discussion") {
-          // Record the classification event.
           const rawClassification = String(args.classification).toLowerCase();
           if (typeof args.rationale !== "string" || args.rationale.trim().length === 0) {
             // Not recorded, so a STALE call without a reason cannot open the
@@ -465,8 +497,9 @@ export class ModeratorRuntime {
             resultText = `invalid classification "${String(args.classification)}"; must be "active" or "stale"`;
           }
         } else if (call.function.name === "matrix_send_message") {
-          // STRUCTURAL INVARIANT: posting is only reachable from STALE path.
-          // Verify at the gate: if classification is ACTIVE, reject the message.
+          // STRUCTURAL INVARIANT: posting is only reachable after a STALE
+          // classification in this Assessment; anything else is rejected here,
+          // so the prompt's rule does not depend on the model obeying it.
           if (classification !== "stale") {
             resultText =
               "ERROR: You can only post a message after classifying the discussion as STALE. " +
@@ -496,6 +529,8 @@ export class ModeratorRuntime {
           }
 
           resultText = await mcp.callTool(call.function.name, { ...args, content: body });
+          // Set before parsing: the message is in the room even if the response
+          // below is malformed, and runLoop must not re-run and post again.
           this.postedThisTurn = true;
           try {
             const sent = JSON.parse(resultText) as { id: string; createdAt: string };
@@ -544,7 +579,8 @@ export class ModeratorRuntime {
       );
     }
 
-    // Record the "Moderator ended Run" event only if STALE and we posted.
+    // Only a posted closing message ends the Run; the runner watches for this
+    // event to record the Run as completed.
     if (classification === "stale" && closingMessageId) {
       await appendEvent(logDir, runId, {
         type: "moderator_ended_run",
@@ -562,17 +598,19 @@ export class ModeratorRuntime {
   }
 
   /**
-   * The Moderator's continuous event-driven loop, run for the life of the process
-   * (or until it ends the Run by classifying STALE).
+   * The Moderator's continuous event-driven loop. Returns once an Assessment
+   * has ended the Run (STALE with the closing message posted) or `isStopped`
+   * says so; otherwise runs for the life of the process.
    *
    * Each iteration blocks on the room long-poll, wakes when activity arrives,
-   * runs an assessment, and either continues waiting (ACTIVE) or ends the Run
+   * runs an Assessment, and either continues waiting (ACTIVE) or ends the Run
    * (STALE). Each time the room has stayed silent for `quietReassessAfterMs`
-   * (since the last activity or the last quiet assessment), it assesses anyway
+   * (since the last activity or the last quiet Assessment), it assesses anyway
    * and tells the model how long the room has been silent in total: silence is
    * itself evidence the discussion may have trailed off.
    *
-   * While waiting, emits an agent_heartbeat to provide liveness evidence.
+   * Before every wait it appends a "waiting" agent_heartbeat; the runner's
+   * moderator watch reads those as liveness evidence.
    *
    * A failed wait is logged and re-waited from the same `since` after a
    * growing backoff (reset by the next successful wait); a failed
@@ -643,7 +681,6 @@ export class ModeratorRuntime {
           timestamp: new Date().toISOString(),
         });
       }, () => !this.postedThisTurn);
-      // Moderator classified STALE and posted; end the Run.
       if (result?.shouldEnd) return;
     }
   }

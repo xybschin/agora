@@ -1,3 +1,9 @@
+/**
+ * Reads an agent container's configuration from the environment the runner
+ * stages for it (see the runner's composeGenerator). Missing required
+ * variables fail fast at startup rather than surfacing mid-Run. The
+ * Moderator's container has its own loader, moderator-config.ts.
+ */
 import type { AgentDefinition, SamplingParams } from "@agora/shared";
 import { resolveSamplingParams, type ResolvedSampling } from "./llm.js";
 
@@ -7,6 +13,11 @@ export interface AgentEnvConfig {
   agentDefinition: AgentDefinition;
   topic: string;
   roomId: string;
+  /**
+   * The per-turn cap on tool-calling rounds: the Scenario's
+   * `maxToolStepsPerTurn`. This field and its env var MAX_TOOL_STEPS_PER_TICK
+   * still carry their tick-era names.
+   */
   maxToolStepsPerTick: number;
   logDir: string;
   mcpUrl: string;
@@ -25,11 +36,12 @@ function requireEnv(name: string): string {
 }
 
 /**
- * Reads the optional merged sampling config the runner staged in
+ * Parses the optional merged sampling config the runner staged in
  * LLM_SAMPLING_JSON (Scenario.samplingParams overridden by the agent's own
- * credential sampling) and resolves the final per-agent values -- applying
- * llm.ts defaults, including the agent-id-derived temperature, for anything
- * neither source set. Absent env means the agent gets the defaults.
+ * credential sampling). Returns undefined when the env is absent; the caller
+ * then passes it to resolveSamplingParams, which fills llm.ts defaults --
+ * including the agent-id-derived temperature -- for anything neither source
+ * set. Malformed JSON throws, failing startup.
  */
 function readMergedSampling(): SamplingParams | undefined {
   const raw = process.env.LLM_SAMPLING_JSON;

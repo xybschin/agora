@@ -17,6 +17,10 @@ export interface Logger {
   error(message: string, ...details: unknown[]): void;
 }
 
+/**
+ * Returns a logger whose lines are tagged `[scope]`: the process or component
+ * writing them, e.g. "runner", "mcp-server", "moderator" or an agent id.
+ */
 export function createLogger(scope: string): Logger {
   // console is looked up per call, not captured, so a test's spyOn(console, ...)
   // still sees the line.
@@ -33,6 +37,7 @@ export function createLogger(scope: string): Logger {
   };
 }
 
+/** Renders one log line; exported so the format can be pinned with a fixed clock. */
 export function formatLogLine(
   at: Date,
   level: LogLevel,

@@ -3,9 +3,11 @@ import yaml from "js-yaml";
 import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
 import { generateComposeFile } from "./composeGenerator.js";
 
-// The room id the runner just created is a per-Run value, so it arrives on the
-// params rather than being read off the credentials file: every agent container
-// has to be told which room this Run is in, and nothing else.
+// Pins the environment each generated service receives: the Run's room id and
+// container-facing homeserver URL, sampling and seed handed only where they
+// belong, the Moderator's topic and roster, and compose-safe escaping of every
+// value. The room id is a per-Run value, so it arrives on the params rather than
+// being read off the credentials file.
 
 const scenario: ScenarioConfig = {
   name: "remote-work-policy",
@@ -144,7 +146,7 @@ describe("generateComposeFile", () => {
     // deliberately not in the roster, so nothing here can grow a service for it.
     // The whole file coming out byte-identical is the proof -- same services,
     // same env (so no LLM key for a Reader), and the same agentPorts, which is
-    // exactly the set the orchestrator ticks.
+    // exactly the set the runner health-checks.
     const withReaders = generateComposeFile({
       runId: "remote-work-policy-1759000000000",
       roomId: "!run1:localhost",

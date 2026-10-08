@@ -10,6 +10,11 @@ import {
 } from "./schema.js";
 import type { z } from "zod";
 
+// Pins the shapes Agora accepts from outside the type system: credentials.yaml,
+// Scenario YAML, and the Matrix tool schemas and catalog the MCP server and
+// client share. Each is a contract with another process or with the model, so a
+// change here is a change in what those accept.
+
 // The credential shape is owned by shared and must mirror exactly what
 // matrixBootstrap.ts writes to credentials.yaml (matrixSetupAccessToken,
 // matrixSetupUserId, matrix.hostBaseUrl/containerBaseUrl,

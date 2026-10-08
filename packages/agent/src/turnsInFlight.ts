@@ -1,3 +1,9 @@
+/**
+ * Which agents are mid-turn right now, read off a Run's event log. The
+ * Moderator (moderator.ts) has no other view of agent turns, and uses this to
+ * tell its model when a quiet room may only mean replies are still being
+ * composed.
+ */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 

@@ -1,3 +1,22 @@
+// matrixActions.ts
+//
+// The Matrix Client-Server API calls behind the MCP tools that index.ts
+// registers. Each tool maps onto one primary CS-API call:
+//
+//   matrix_read_room          GET /_matrix/client/v3/rooms/{id}/messages?dir=b
+//   matrix_send_message       PUT /_matrix/client/v3/rooms/{id}/send/m.room.message/{txnId}
+//   matrix_add_reaction       PUT /_matrix/client/v3/rooms/{id}/send/m.reaction/{txnId}
+//   matrix_wait_for_activity  GET /_matrix/client/v3/sync (long-poll)
+//
+// plus supporting reads: /account/whoami (who the caller is), /joined_members
+// (display names), and /rooms/{id}/event/{eventId} (reply quotes).
+//
+// Requests go through raw fetch rather than matrix-js-sdk. That keeps the
+// tools minimal, keeps the heavy SDK (and its crypto/olm dependencies) out of
+// the MCP server, and gives full control of the request and response shapes.
+//
+// Every function takes the room id from its caller, which in turn takes it
+// from MATRIX_ROOM_ID, never from a model-supplied tool argument.
 import type { MatrixClient } from "./matrixPool.js";
 
 export interface RoomMessage {
@@ -29,21 +48,13 @@ interface RawEvent {
   origin_server_ts?: number;
 }
 
-/**
- * These functions call the Matrix Client-Server API directly (raw fetch)
- * rather than going through matrix-js-sdk. That mirrors the previous
- * discordActions.ts decision to use raw REST: it keeps the tools minimal,
- * avoids pulling the heavy SDK (and its crypto/olm dependencies) into the
- * MCP server, and gives us full control of the request/response shape. The
- * three tools map directly onto three CS-API calls:
- *
- *   read ~   GET  /_matrix/client/v3/rooms/{id}/messages?dir=b
- *   send ~   PUT  /_matrix/client/v3/rooms/{id}/send/m.room.message/{txnId}
- *   react ~  PUT  /_matrix/client/v3/rooms/{id}/send/m.reaction/{txnId}
- */
-
 const CLIENT_PREFIX = "/_matrix/client/v3";
 
+/**
+ * Sends one authenticated CS-API request as the client's token and returns the
+ * parsed JSON body. Throws on any non-2xx status, with the homeserver's
+ * response text in the message.
+ */
 async function csRequest<T>(
   client: MatrixClient,
   method: "GET" | "PUT",
@@ -63,8 +74,8 @@ async function csRequest<T>(
     const text = await response.text();
     throw new Error(`Matrix API ${method} ${path} failed (${response.status}): ${text}`);
   }
-  // 200-empty responses (e.g. some federation no-op) would break JSON.parse;
-  // the Matrix API returns null in that case.
+  // Parsed unconditionally: every endpoint called here answers success with a
+  // JSON object, so an empty body would be a homeserver fault and throws here.
   return (await response.json()) as T;
 }
 
@@ -85,7 +96,16 @@ export async function resolveOwnUserId(client: MatrixClient): Promise<string> {
   return data.user_id;
 }
 
-/** Read the most recent messages in a room, oldest of the fetched first. */
+/**
+ * Reads the most recent messages and reactions in a room, returned oldest
+ * first. `limit` goes straight to the homeserver as the number of events to
+ * fetch, and reactions count against it.
+ *
+ * The caller's own events have their `content` prefixed with
+ * "**your message:**", which the agent's system prompt (persona.ts) tells it
+ * to look for. Makes three requests: /messages, /joined_members for display
+ * names, and /account/whoami to learn who the caller is.
+ */
 export async function readRoom(
   client: MatrixClient,
   roomId: string,
@@ -102,7 +122,9 @@ export async function readRoom(
     `/rooms/${encodeURIComponent(roomId)}/messages?${params.toString()}`,
   );
 
-  // Fetch member list to resolve displaynames
+  // The member list is only used to name senders and is never returned, so
+  // it does not become the member-list tool that ADR-0003 relies on agents
+  // lacking: a Reader who never speaks never shows up in a read.
   let memberMap: Record<string, string> = {};
   try {
     // /joined_members returns a flat member object per user ({ display_name,
@@ -117,7 +139,8 @@ export async function readRoom(
       memberMap[userId] = member.display_name ?? userId;
     }
   } catch {
-    // If joined_members fails, fall back to user IDs
+    // Display names are cosmetic, so a failed lookup should not fail the
+    // read; senders fall back to their raw user IDs.
   }
 
   // Identity comes from the token, never from a client-supplied value, so own
@@ -127,8 +150,7 @@ export async function readRoom(
   const messages = (data.chunk ?? [])
     .filter((event) => {
       if (event.type === "m.room.message") return true;
-      // Only surface reactions attached to a message for annotative signal,
-      // like a lightweight agree/disagree indicator.
+      // Reactions are kept as a lightweight agree/disagree signal.
       if (event.type === "m.reaction") return true;
       return false;
     })
@@ -166,15 +188,14 @@ function txnId(): string {
 }
 
 /**
- * Strip leading quote syntax from a message, typically added by agents when
- * replying. When a rich reply uses m.in_reply_to, the system provides its own
- * fallback quote, so agent-generated quotes should be removed.
- * Looks for the pattern: > <@...> followed by quoted lines, then a blank line.
+ * Strips a leading reply quote from a message, the kind agents copy from what
+ * readRoom shows them when they reply. sendMessage builds its own fallback
+ * quote for a rich reply, so a quote the agent wrote would appear twice.
+ * Only a message starting with "> <@" and containing a blank line is touched;
+ * everything up to the first blank line is dropped. Anything else is returned
+ * unchanged.
  */
 export function stripQuote(content: string): string {
-  // If content starts with a quote (> <@...) and has a blank line separator,
-  // strip everything before and including that separator. The first part is a
-  // prefix of content, so it starts with the quote marker too.
   if (content.startsWith("> <@")) {
     const parts = content.split("\n\n");
     if (parts.length > 1) {
@@ -217,7 +238,12 @@ async function replyFallback(
   }
 }
 
-/** Send an m.text message to a room; optionally as a rich reply to an event. */
+/**
+ * Sends an m.text message to a room, optionally as a rich reply to
+ * `replyToEventId`. A reply costs an extra request to fetch the original for
+ * its quote. `createdAt` in the result is this server's clock at send time,
+ * not the homeserver's origin_server_ts.
+ */
 export async function sendMessage(
   client: MatrixClient,
   roomId: string,
@@ -229,16 +255,15 @@ export async function sendMessage(
     body: content,
   };
   if (replyToEventId) {
-    // Strip any agent-generated quote prefix before building the rich reply.
-    // The system will add its own fallback quote per the spec.
+    // Drop any quote the agent wrote itself; replyFallback supplies the real
+    // one below.
     const cleanContent = stripQuote(content);
     body = {
       msgtype: "m.text",
       body: cleanContent,
       "m.relates_to": {
-        // Rich reply -- includes a quoted fallback for clients that don't
-        // render the relation. The quote in `body` is required by the spec for
-        // plain-text fallback; some homeservers validate it loosely.
+        // The relation is what makes this a reply; the quote added to `body`
+        // below only serves clients that don't render the relation.
         "m.in_reply_to": { event_id: replyToEventId },
       },
     };
@@ -259,7 +284,7 @@ export async function sendMessage(
   return { id: sent.event_id, createdAt: new Date().toISOString() };
 }
 
-/** React to a message with an emoji (an m.annotation on the target event). */
+/** Reacts to an event with an emoji (an m.annotation on the target event). */
 export async function addReaction(
   client: MatrixClient,
   roomId: string,
@@ -302,8 +327,16 @@ export interface WaitForActivityResult {
  * new is a normal success: it returns `hasActivity: false`, not an error — the
  * loop just goes back to waiting.
  *
+ * Without `since`, the request is an initial sync, which homeservers answer
+ * at once with the room's recent timeline, so a first wait in a room that
+ * already has messages reports activity immediately. If the response carries
+ * no `next_batch`, the old `since` (or "") is returned so the caller can keep
+ * looping.
+ *
  * `roomId` comes from the server's bound MATRIX_ROOM_ID (the handler resolves
- * it from the environment), never from a model-supplied tool argument.
+ * it from the environment), never from a model-supplied tool argument. It is
+ * used only to pick this room out of the sync response: /sync itself is not
+ * room-scoped, so the room id never goes over the wire.
  */
 export async function waitForActivity(
   client: MatrixClient,

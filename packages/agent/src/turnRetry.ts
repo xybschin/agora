@@ -1,3 +1,7 @@
+/**
+ * The outer retry policy for a failed Turn, shared by the agent loop
+ * (loop.ts) and the Moderator (moderator.ts).
+ */
 import type { Logger } from "@agora/shared";
 
 /**
@@ -30,7 +34,7 @@ export const DEFAULT_TURN_RETRY: TurnRetryOptions = {
 /**
  * Runs `attempt` until it succeeds or the retry cap is hit. Every failure is
  * handed to `onFailure` (which records it as `agent_turn_failed`) before the
- * backoff, so the transcript shows each failed attempt, not just the last.
+ * backoff, so the event log shows each failed attempt, not just the last.
  * `canRetry` is asked after each failure: a turn that already posted to the
  * room has acted on its activity, and re-running it would post twice.
  * Returns the turn's result, or undefined once the loop gives up.

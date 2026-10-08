@@ -1,3 +1,10 @@
+/**
+ * Pins how turnsInFlight.ts reads open turns off an event log: only an
+ * agent's latest unclosed turn counts, the Moderator and unparseable lines
+ * are ignored, and an unreadable log is reported as unknown (null) rather
+ * than as nobody mid-turn. The Moderator relies on this to tell its model
+ * when a quiet room may only mean replies are still being composed.
+ */
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";

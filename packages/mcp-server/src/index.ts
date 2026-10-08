@@ -1,3 +1,19 @@
+// index.ts
+//
+// The Matrix MCP server: one container per Run that every agent and the
+// Moderator reach over HTTP (MCP_URL, set by the runner's composeGenerator.ts)
+// to read, post to, react in, and long-poll the Run's room. It is the only
+// path from an LLM tool call to Matrix.
+//
+// The tool surface comes from `matrixToolCatalog` in @agora/shared and is
+// deliberately small: there is no member-list tool, which is what keeps a
+// Reader invisible to the population (ADR-0003). Each caller's identity is its
+// own Matrix access token, sent as a Bearer header; the room is fixed by
+// MATRIX_ROOM_ID. Neither is ever a tool argument, so a model cannot speak as
+// another account or into another room.
+//
+// The Matrix calls themselves live in matrixActions.ts; matrixPool.ts turns a
+// token into a client.
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -41,19 +57,22 @@ function runRoomId(): string {
 
 /**
  * Builds a fresh McpServer per request, closing over the caller's access
- * token. Identity is bound to the session (Q7 of the design): tools take no
+ * token. Identity is bound to that token (Q7 of the design): tools take no
  * agent_id parameter, and readRoom resolves the caller's identity from the
  * token itself (GET /account/whoami) rather than from any client-supplied
  * header, so one agent can never act as another Matrix user. The room is bound
  * the same way, from the environment rather than the tool call.
+ *
+ * Throws if MATRIX_ROOM_ID is unset, or if the shared catalog names a tool
+ * that has no handler here.
  */
 function buildServer(accessToken: string): McpServer {
   const server = new McpServer({ name: "agora-matrix-mcp", version: "0.1.0" });
   const roomId = runRoomId();
 
   // One handler per tool, keyed by the catalog name. Each closes over the
-  // caller's token and room, so identity and room stay bound to the
-  // session (Q7 of the design): tools take no agent_id or room_id parameter.
+  // caller's token and room, which is why tools take no agent_id or room_id
+  // parameter.
   const handlers: Record<
     string,
     (args: any) => CallToolResult | Promise<CallToolResult>
@@ -97,6 +116,8 @@ function buildServer(accessToken: string): McpServer {
   return server;
 }
 
+// A request without a Bearer token is refused before any MCP handling: with no
+// token there is no identity to act as.
 app.post("/mcp", async (req, res) => {
   let accessToken: string;
   try {

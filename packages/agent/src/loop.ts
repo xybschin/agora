@@ -1,3 +1,13 @@
+/**
+ * A conversation agent's runtime: the event-driven loop that waits for room
+ * activity (runLoop) and the Turn it takes on each wake (runTurn), in which
+ * the model calls Matrix tools and records its private stance. Every Turn is
+ * bracketed in the Run's event log (`agent_turn_started`, then
+ * `agent_turn_ended` or `agent_turn_failed`), and the loop heartbeats while it
+ * waits (see ADR-0008 for why agents are activity-driven rather than
+ * scheduled). The prompt comes from persona.ts, model calls from llm.ts, and
+ * room access from mcpClient.ts; the Moderator's loop is moderator.ts.
+ */
 import type { AgentDefinition, Logger } from "@agora/shared";
 import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
@@ -13,14 +23,16 @@ export interface AgentRuntimeConfig {
   topic: string;
   roomId: string;
   matrixUserId: string;
+  /** Per-turn cap on tool-calling rounds (the Scenario's maxToolStepsPerTurn; tick-era name). */
   maxToolStepsPerTick: number;
   logDir: string;
   mcp: MatrixMcpClient;
   llm: LlmConfig;
   /**
    * How long each long-poll for new room activity blocks before the loop gives
-   * up and re-waits. Defaults to the shared tool's max (30s) but is injected so
-   * tests can drive the loop with a short wait.
+   * up and re-waits. Defaults to the shared tool's max
+   * (matrixWaitForActivityTimeoutMs) but is injected so tests can drive the
+   * loop with a short wait.
    */
   waitTimeoutMs?: number;
   /**
@@ -58,7 +70,7 @@ export interface TurnMessageParams {
 }
 
 /**
- * Builds the per-turn user message that replaces the frozen "Tick N: it is
+ * Builds the per-turn user message that replaces the old frozen "Tick N: it is
  * your turn" (mechanism C: no news in per-tick prompts). Carries the two
  * deltas the turn should act on -- what arrived since the last turn, and what
  * the agent itself last said so it does not restate it -- instead of an
@@ -101,10 +113,11 @@ const OWN_MESSAGE_HISTORY_MAX = 3;
 
 /**
  * The limit the runtime requests when counting room messages for the per-turn
- * news (see countRoomMessages): the tool's maximum, so the count is a measure
- * of total room growth rather than a value capped at a short window. Mirrors
+ * news (see countRoomMessages): the tool's maximum, so the count tracks room
+ * growth rather than a value capped at a short window. Mirrors
  * matrixReadRoomSchema's max; kept separate so the two intents can drift
- * independently.
+ * independently. Once the room holds more than this the count saturates and
+ * the news reads "nothing new".
  */
 const ROOM_COUNT_LIMIT = 100;
 
@@ -126,10 +139,10 @@ const STANCE_TOOL: ToolSpec = {
 };
 
 /**
- * Runs one agent's tool-calling loop: the model itself decides when to call
- * matrix_read_room / matrix_send_message / update_stance, one round of
- * tool-calls at a time, until it stops calling tools or hits the per-turn
- * tool-step limit (the safety cap against runaway loops, Q16 + Q21).
+ * One agent in one Run. Each Turn is a tool-calling loop: the model itself
+ * decides when to call matrix_read_room / matrix_send_message / update_stance,
+ * one round of tool-calls at a time, until it stops calling tools or hits the
+ * per-turn tool-step limit (the safety cap against runaway loops, Q16 + Q21).
  */
 export class AgentRuntime {
   private currentStance: number;
@@ -161,8 +174,10 @@ export class AgentRuntime {
   private hasCompletedTurn = false;
 
   /**
-   * Whether the current turn has posted to the room. A failed turn that
-   * already posted is not re-run, which would post twice.
+   * Whether the current turn has sent to the room. Set as soon as a send
+   * returns, before its response is validated, so a send that then fails the
+   * turn still counts. A failed turn that sent is not re-run, which could post
+   * twice.
    */
   private postedThisTurn = false;
 
@@ -171,14 +186,14 @@ export class AgentRuntime {
    * issued by the runtime itself (not the model) so the per-turn message can say
    * "new since your last turn" about messages the agent has not seen yet.
    *
-   * Requests the tool's maximum limit (100, the schema cap) rather than the
-   * model's read window so the count tracks the room's *actual* growth instead
+   * Requests ROOM_COUNT_LIMIT (the tool's schema cap) rather than the model's
+   * read window so the count tracks the room's *actual* growth instead
    * of saturating at a short window: the news is "N messages arrived since your
    * last turn", independent of how much the model chooses to read.
    *
    * Deliberately never throws: the news is a nicety, not a reason to lose a
-   * turn. Any failure -- homeserver hiccup, malformed response -- degrades to
-   * "no new messages", keeping silent no-op turns valid.
+   * turn. Any failure -- homeserver hiccup, malformed response -- returns null,
+   * which runTurn reads as "no new messages", keeping silent no-op turns valid.
    */
   private async countRoomMessages(): Promise<number | null> {
     try {
@@ -218,14 +233,20 @@ export class AgentRuntime {
    * Monotonic count of this agent's turns in this Run, starting at 1, used to
    * bracket a turn with `agent_turn_started`/`agent_turn_ended`. Independent
    * per agent and per Run by construction (each Run gets fresh containers and
-   * a fresh runtime), and the per-agent answer to the global tick bracket it
-   * replaces: with no shared tick, each agent's own turn pair is its liveness
-   * evidence. In the event-driven world one turn runs per wake (see runLoop),
-   * driven by room activity rather than a schedule; the counter stays a
-   * per-agent count regardless of what drives the loop.
+   * a fresh runtime). With no shared clock across agents, each agent's own
+   * turn bracket is its liveness evidence. Every attempt counts, so a turn
+   * re-run after a failure gets the next number.
    */
   private turn = 0;
 
+  /**
+   * Takes one Turn, posting to the room if the model chooses to. Writes to the
+   * Run's event log: `agent_turn_started`, a `usage` per LLM call, a `message`
+   * per post, a `stance` per update_stance call (or one carried-over `stance`
+   * if the model made none), and finally `agent_turn_ended`. Throws when the
+   * turn cannot complete (an LLM call that outlasted its retries, a rejected
+   * send), leaving the bracket for runLoop to close with `agent_turn_failed`.
+   */
   async runTurn(): Promise<TurnResult> {
     const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, logDir, mcp, llm } =
       this.config;
@@ -338,7 +359,7 @@ export class AgentRuntime {
           } else {
             // Non-finite (e.g. "abc", "0.5x") or null/undefined: leave the prior
             // stance untouched and record the drop explicitly rather than
-            // silently, so the transcript shows the stance was carried over.
+            // silently, so the event log shows the stance was carried over.
             const prior = this.currentStance;
             await appendEvent(logDir, runId, {
               type: "stance",
@@ -434,11 +455,12 @@ export class AgentRuntime {
     this.lastTurnStartCount = currentCount ?? this.lastTurnStartCount;
     this.hasCompletedTurn = true;
 
-    // Close the turn bracket. `turn_ended` is only reached when the turn runs to
-    // completion — if runTurn throws part-way (a hard homeserver rejection of a
-    // send, say) runLoop closes the bracket with `agent_turn_failed` instead. An
-    // `agent_turn_started` left unclosed by either is the signature of a process
-    // that died mid-turn, the liveness evidence this bracket exists to provide.
+    // Close the turn bracket. `agent_turn_ended` is only reached when the turn
+    // runs to completion — if runTurn throws part-way (a hard homeserver
+    // rejection of a send, say) runLoop closes the bracket with
+    // `agent_turn_failed` instead. An `agent_turn_started` left unclosed by
+    // either is the signature of a process that died mid-turn, the liveness
+    // evidence this bracket exists to provide.
     await appendEvent(logDir, runId, {
       type: "agent_turn_ended",
       runId,
@@ -461,11 +483,10 @@ export class AgentRuntime {
    * to waiting.
    *
    * While waiting, the runtime emits an `agent_heartbeat` with state
-   * "waiting" — the per-agent liveness evidence that replaces the liveness the
-   * old global tick bracket provided for free (no more shared tick to group
-   * events by). The heartbeat is written *before* each wait, so a container
-   * that has gone quiet still leaves a stream of liveness proof while it waits
-   * for the room.
+   * "waiting" -- per-agent liveness evidence between turns (ADR-0008). The
+   * heartbeat is written *before* each wait, so a quiet room still leaves one
+   * heartbeat per wait timeout as proof the agent is alive. Only "waiting" is
+   * ever emitted; a turn in progress is evidenced by its open bracket.
    *
    * The `since` resume token is threaded through the waits: each /sync returns
    * a `next_batch` that the next wait passes back, so the loop tracks the room
@@ -481,11 +502,12 @@ export class AgentRuntime {
    * loses nothing and retries from the same position.
    *
    * A turn that throws is caught separately: it is recorded as
-   * `agent_turn_failed` (with the error) in the transcript and re-run after a
+   * `agent_turn_failed` (with the error) in the event log and re-run after a
    * backoff rather than dropped -- the activity that triggered it may be the
-   * only activity the room will ever see. Past the retry cap the loop goes back
-   * to waiting. Keeping the two catches apart means a failed turn is never
-   * misreported as a failed wait.
+   * only activity the room will ever see. Past the retry cap, or at once if the
+   * failed turn already sent to the room, the loop goes back to waiting.
+   * Keeping the two catches apart means a failed turn is never misreported as
+   * a failed wait.
    */
   async runLoop(): Promise<void> {
     const { runId, agentId, mcp } = this.config;
@@ -525,7 +547,7 @@ export class AgentRuntime {
       await runTurnWithRetry(this.log, turnRetry, () => this.runTurn(), async (err) => {
         // A turn that throws (an LLM call that outlasted its retries, a send the
         // homeserver rejected) closes its bracket with `agent_turn_failed` so
-        // the transcript says why the agent went quiet.
+        // the event log says why the agent went quiet.
         this.log.error(`turn ${this.turn} failed:`, err);
         await appendEvent(this.config.logDir, runId, {
           type: "agent_turn_failed",

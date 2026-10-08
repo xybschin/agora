@@ -25,8 +25,8 @@ const log = createLogger("runner");
 /**
  * Handles a failure from `createRunRoom` that should abort the Run: prints the
  * readable per-run message and records the terminal `run_aborted` event with that
- * reason as its `reason`, so the transcript ends on a verdict. Tick 0 is the
- * honest value -- the room never got far enough for a tick 1.
+ * reason as its `reason`, so the transcript ends on a verdict. Writes nothing
+ * if the Run was already closed out (e.g. by a signal).
  *
  * Returns true when the error was an abort-worthy room-setup failure (and was
  * therefore recorded), false when it was any other error and the caller must

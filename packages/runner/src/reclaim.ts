@@ -22,18 +22,18 @@
  *   signature — and is never eligible for reclamation. Only a Run that recorded
  *   how it ended may be reclaimed.
  *
- * The mechanism reads the logs (the transcripts) rather than introducing a
- * metadata store, honouring ADR-0001's rejection of a Run-metadata index: status
- * is derived from `logs/<runId>/events.jsonl`, never stored. Derive-then-act,
- * logs as source of truth.
+ * The mechanism reads the logs rather than introducing a metadata store
+ * (ADR-0006): eligibility is derived from `logs/<runId>/events.jsonl` at the
+ * moment of deletion, never stored. Derive-then-act, logs as source of truth.
  *
  * Usage:
  *   bun run packages/runner/src/reclaim.ts <runId>... [--logs] [--room]
- *       [--credentials <credentials.yaml>]
+ *       [--all-eligible] [--credentials <credentials.yaml>]
  *
  * At least one target flag is required. Without one the command does nothing.
- * A runId names a `logs/<runId>` directory. Only runs whose verdict is terminal
- * are acted on; an `incomplete` run is refused.
+ * A runId names a `logs/<runId>` directory; `--all-eligible` selects every one
+ * on disk instead. Only Runs whose verdict is terminal are acted on; an
+ * `incomplete` Run is refused.
  */
 
 import { readFile, readdir, rm } from "node:fs/promises";
@@ -116,13 +116,22 @@ export interface ReclaimResult {
 
 /**
  * Applies an explicit reclamation to one Run. Never deletes anything the Run
- * did not record ending: an `incomplete` transcript is refused outright.
+ * did not record ending: an `incomplete` transcript is refused outright, before
+ * any file or homeserver is touched.
  *
- * - Logs are reclaimed as a filesystem removal of `logDir/<runId>`.
+ * - Logs are reclaimed as a recursive removal of `logDir/<runId>`.
  * - A room is resolved from the runId by the room-name convention
- *   (`roomNameForRun`, "Agora - <scenario> - <runId>") against the homeserver
- *   using the setup account's token — never from the transcript's `message`
- *   events, which record the room id only when a message was sent.
+ *   (`roomNameForRun`, "Agora - <scenario> - <runId>") against the homeserver's
+ *   public room directory using the setup account's token — never from the
+ *   transcript's `message` events, which record the room id only when a message
+ *   was sent. The lookup runs for every eligible Run, even when only `--logs`
+ *   was asked for; the room is deleted only when `targets.reclaimRoom` is set.
+ *
+ * Logs are removed before the room is looked up, so a homeserver failure
+ * (thrown) can leave a Run with its logs gone and its room intact. The verdict
+ * is "room-not-found" only when the room was not in the directory *and* no logs
+ * were removed; otherwise it is "reclaimed", and the two booleans say what
+ * actually went.
  */
 export async function reclaimRun(params: {
   logDir: string;

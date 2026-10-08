@@ -1,3 +1,6 @@
+// Pins which room-setup failures recordRoomSetupAbort turns into a terminal
+// run_aborted (RoomPermissionsError, ReaderInviteError) and that it leaves every
+// other error unrecorded for the caller.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -1,3 +1,10 @@
+/**
+ * Builds a conversation agent's system prompt: its persona, its current
+ * private stance, the tools it may call, and its Own message history. Rebuilt
+ * by loop.ts at the start of every Turn, so the stance and history it quotes
+ * are always current. The per-turn user message is built separately
+ * (loop.ts buildTurnMessage).
+ */
 import type { Persona } from "@agora/shared";
 
 /**
@@ -53,7 +60,12 @@ function traitDirectives(persona: Persona): string {
 export function buildSystemPrompt(params: {
   persona: Persona;
   topic: string;
+  /** Omitted means the persona's initialStance. */
   currentStance?: number;
+  /**
+   * True until the agent has completed a Turn; adds its starting stance for
+   * reference. The name predates Turns.
+   */
   isFirstTick?: boolean;
   /** The agent's own recently posted messages (oldest first); quoted so it does not restate them. */
   ownMessageHistory?: readonly string[];

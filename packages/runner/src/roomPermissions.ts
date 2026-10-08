@@ -48,7 +48,7 @@ const AGENT_LEVEL = 50;
 
 /**
  * The level everything that decides who else is in the room or what the room is
- * sits at, and the highest an agent can ever reach.
+ * sits at: above `AGENT_LEVEL`, so no agent can reach any of it.
  *
  * It is not named for the setup account in `users`: Synapse (the only
  * homeserver this repo runs) refuses a power-levels event whose `users` names
@@ -94,7 +94,7 @@ export function runRoomPowerLevels(params: {
 
   // `users` names every agent explicitly. The setup account is the creator and
   // so is already at 100 by the creator rule, which is exactly why it must not
-  // also appear here — see the note above and ADR-0003.
+  // also appear here — see the note above.
   const users: Record<string, number> = {};
   for (const userId of agentUserIds) {
     users[userId] = AGENT_LEVEL;
@@ -122,9 +122,9 @@ export function runRoomPowerLevels(params: {
       "m.room.server_acl": SETUP_LEVEL,
     },
     // `m.room.message` and `m.reaction` are named nowhere above, so both fall to
-    // this threshold: an agent at 50 clears it and speaks, a Reader at 0 does not
-    // and is refused both. That is the whole of the Reader guarantee, in one
-    // number.
+    // this threshold: an agent at `AGENT_LEVEL` clears it and speaks, a Reader at
+    // `READER_LEVEL` does not and is refused both. That is the whole of the
+    // Reader guarantee, in one number.
     events_default: AGENT_LEVEL,
     // The backstop behind the named events: any state event this harness did not
     // think to list is still above the agents.
@@ -170,7 +170,7 @@ const MAP_KEYS = ["users", "events"] as const satisfies readonly (keyof RoomPowe
  * for actually in force", not "is there anything in there I did not expect". The
  * escalation that would make the second question matter -- someone seated above
  * an agent -- is closed off by `m.room.power_levels` and `state_default` both
- * sitting at 100, so no agent can write the event that would do it.
+ * sitting at `SETUP_LEVEL`, so no agent can write the event that would do it.
  */
 export function roomPermissionMismatches(
   wanted: RoomPowerLevels,
@@ -250,13 +250,13 @@ export async function establishRunRoomPermissions(params: {
   powerLevels: RoomPowerLevels;
 }): Promise<void> {
   const { baseUrl, accessToken, roomId, powerLevels } = params;
-  // One endpoint, written and read at the same URL. Power levels live at the
-  // empty state key, and Synapse normalises a missing trailing slash to that
-  // same empty key, so `statePath` and `statePath + "/"` are the same event and
-  // the read comes back as the event's content on its own -- not wrapped in an
-  // envelope. That unwrapped shape is the reason this used to abort every Run
-  // against a live homeserver while passing every stubbed test: the stub below
-  // was written to match this call site rather than to match the API.
+  // One state event, written and read at two spellings of its URL. Power levels
+  // live at the empty state key: the PUT names that key explicitly with a
+  // trailing slash, and the GET leaves it off, which Synapse treats as the same
+  // empty key. The GET answers with the event's content on its own, not wrapped
+  // in an envelope, so the read-back compares that body directly. (Reading
+  // `.content` off it once aborted every live Run while stubbed tests passed;
+  // runRoom.test.ts pins the bare shape.)
   const statePath = roomPath(roomId, "state/m.room.power_levels");
 
   await csRequest(baseUrl, "PUT", `${statePath}/`, {

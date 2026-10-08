@@ -8,8 +8,14 @@
  * room id is a per-Run value the runner holds rather than something this script
  * provisions once and every Run of the Scenario reuses. The setup account is
  * still registered here because the runner needs its token to create each
- * room and admit the agents. (The seed message is posted by an agent, not the
- * setup account, which is the Moderator.)
+ * room and admit the agents, and because it becomes the Moderator in every
+ * Run's room (ADR-0008). It is registered as "Setup"; the runner renames it to
+ * "Moderator" when it joins a Run's room. (The seed message is posted by the
+ * Scenario's `seedAuthor`, not by the setup account.)
+ *
+ * Every invocation registers fresh accounts and rewrites the output file. Only
+ * each agent's LLM settings and `matrix.containerBaseUrl` are carried over from
+ * an existing file, so previously issued Matrix tokens are replaced, not reused.
  *
  * If your homeserver requires registration tokens:
  *   Pass them with --registration-tokens tok1,tok2,...
@@ -81,6 +87,12 @@ interface RegisterResponse {
   device_id: string;
 }
 
+/**
+ * Registers one account and sets its display name. The username gets a random
+ * suffix so re-running the bootstrap never collides with an account an earlier
+ * run created. The password is random and discarded: only the access token is
+ * kept.
+ */
 async function registerAccount(
   baseUrl: string,
   accountId: string,
@@ -173,7 +185,6 @@ async function main(): Promise<void> {
     const placeholder = llmPlaceholderFor(index);
 
     agents[agent.id] = {
-      // Repurposed token field for Matrix access token
       matrixAccessToken: account.accessToken,
       matrixUserId: account.userId,
       llmBaseUrl: existingAgentCred?.llmBaseUrl ?? placeholder.llmBaseUrl,

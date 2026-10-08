@@ -1,7 +1,12 @@
+// Pins how the Moderator container reads its env: the Scenario's topic is
+// required, so a compose file that forgot SCENARIO_TOPIC fails at startup
+// rather than producing a Moderator that judges a discussion without knowing
+// its subject.
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loadModeratorEnvConfig } from "./moderator-config.js";
 
-// The env the runner's compose file gives the Moderator container.
+// The required env the runner's compose file gives the Moderator container
+// (see composeGenerator.ts); each test restores the previous values.
 const MODERATOR_ENV: Record<string, string> = {
   RUN_ID: "remote-work-policy-1759000000000",
   SCENARIO_TOPIC: "Should remote work stay optional?",

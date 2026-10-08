@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 // The runner creates the room each Run happens in (ADR-0003), and
-// matrixBootstrap.ts needs the same create/invite/join calls before that, so
-// both share this module. The module that holds them must be importable without
+// matrixBootstrap.ts registers accounts through the same request seam and path
+// builder, so both share this module. The module must be importable without
 // doing anything: if importing it registered an account or created a room,
 // merely starting the runner would mutate the homeserver. It also owns the
 // Client-Server path prefix, so the wrong version segment fails here rather than
@@ -224,8 +224,8 @@ describe("csRequest", () => {
     // A homeserver is entitled to answer 429, and the Client-Server API asks
     // clients to honour retry_after_ms. The first live Run failed on it: six
     // invites fired back to back, the limiter answered 429 mid-sequence, and
-    // the Run died. A Run that skips an invite is not a Run that should be
-    // salvaged by crashing.
+    // the Run died. Skipping the invite would leave an agent outside the room,
+    // so the only acceptable answer is to wait as asked and re-send.
     let attempt = 0;
     const calls = recordFetch(() => {
       attempt += 1;

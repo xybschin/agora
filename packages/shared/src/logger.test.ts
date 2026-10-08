@@ -1,3 +1,7 @@
+// Pins the shared log-line format and the stdout/stderr split. Every Agora
+// process writes through this logger, so operators and scripts grepping the
+// output depend on the exact shape.
+
 import { describe, expect, spyOn, test } from "bun:test";
 import { createLogger, formatLogLine } from "./logger.js";
 

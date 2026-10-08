@@ -1,11 +1,18 @@
+/**
+ * The operator's live window onto a Run, fed by `superviseRunToTerminal` on
+ * every transcript poll: prints Moderator Assessments and failed turns, and
+ * warns when the Moderator goes silent. Read-only; it never writes events.
+ */
 import { createLogger, type SequencedEvent } from "@agora/shared";
 
 const log = createLogger("runner");
 
 /**
- * Two missed Moderator heartbeats: the Moderator writes one per long-poll, so a
- * minute with nothing from it means it has crashed or never started, rather
- * than that the Run is merely quiet.
+ * Two missed Moderator heartbeats: the Moderator writes one before every
+ * room long-poll, and each long-poll gives up after
+ * `matrixWaitForActivityTimeoutMs`, so this long with nothing from it means it
+ * has crashed, never started, or is stuck, rather than that the Run is merely
+ * quiet.
  */
 export const moderatorQuietWarnAfterMs = 60_000;
 
@@ -21,8 +28,9 @@ export interface ModeratorWatchDeps {
  * transcript, and warns once per silence when the Moderator itself goes quiet
  * (agora-6s2.2). Failed turns, an agent's or the Moderator's, are printed the
  * same way (agora-5su.5), so a Run stalled by e.g. a provider 429 is visible
- * without reading the transcript afterwards. The terminal is the only surface: Assessments are never posted
- * to the room, so the agents cannot react to being judged (ADR-0008).
+ * without reading the transcript afterwards. The terminal is the only surface:
+ * Assessments are never posted to the room, so the agents cannot react to
+ * being judged (ADR-0008).
  *
  * `observe` is handed the whole transcript on every poll. What has been seen is
  * tracked by line position, not by `seq`, because `seq` is not unique per Run
@@ -70,6 +78,7 @@ export function createModeratorWatch(deps: ModeratorWatchDeps = {}) {
 
 export type ModeratorWatch = ReturnType<typeof createModeratorWatch>;
 
+/** Any event the Moderator's container wrote; all of them count as proof of life. */
 function isFromModerator(event: SequencedEvent): boolean {
   if (event.type === "moderator_classification" || event.type === "moderator_ended_run") return true;
   return "agentId" in event && event.agentId === "moderator";

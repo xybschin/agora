@@ -1,12 +1,9 @@
-import OpenAI from "openai";
-import { createLogger, type SamplingParams } from "@agora/shared";
-
-const log = createLogger("llm");
-
 /**
  * OpenAI-compatible chat-completions client using the official SDK.
  * Works with any provider that speaks the OpenAI API format,
  * including OpenAI, OpenRouter, Ollama, and vLLM.
+ *
+ * Used by both the agent loop (loop.ts) and the Moderator (moderator.ts).
  *
  * Sampling (`config.sampling`) is applied to every call: a bounded
  * max_tokens, frequency/presence penalties to blunt echo-chamber repetition,
@@ -23,13 +20,17 @@ const log = createLogger("llm");
  * unsupported parameter as "this provider can't take the sampling": it retries
  * once stripped of all sampling fields. Sampling is best-effort; a Run never
  * dies because a provider declined a penalty. If the stripped call still
- * fails, that genuine error is surfaced.
+ * fails, its error is only logged; what is thrown carries the original 400.
  *
  * Transient failures (429, 5xx, connection errors, hung requests) are retried
  * with jittered exponential backoff before either call gives up -- see
  * `RetryOptions`. One chatCompletion, retries and the sampling fallback
- * included, never runs longer than `maxTotalWaitMs` (5 minutes by default).
+ * included, never runs longer than `maxTotalWaitMs` (see DEFAULT_RETRY).
  */
+import OpenAI from "openai";
+import { createLogger, type SamplingParams } from "@agora/shared";
+
+const log = createLogger("llm");
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -72,16 +73,16 @@ export interface ChatCompletionResult {
 }
 
 // Defaults, applied only where neither the Scenario's samplingParams nor the
-// agent's credential sampling set a value. ~150 tokens enforces brevity;
-// ~0.4 penalties discourage repeating the group's own argument back at it.
+// agent's credential sampling set a value. The token cap enforces brevity; the
+// penalties discourage repeating the group's own argument back at it.
 //
-// The 150-token cap is a deliberate brevity bound (mechanism F): it forces
+// DEFAULT_MAX_TOKENS is a deliberate brevity bound (mechanism F): it forces
 // short chat messages instead of essays. Its trade-off is that very long
-// outputs -- chiefly a tool-call whose JSON `arguments` exceed 150 tokens --
-// get cut off. That is not silent corruption: loop.ts parses tool arguments
-// defensively and degrades to { raw } on a parse failure (the tool then
-// rejects the malformed call and the model can retry), so a truncated turn
-// fails loudly rather than doing something wrong. Scenarios that need roomier
+// outputs -- chiefly a tool-call whose JSON `arguments` exceed the cap -- get
+// cut off. That is not silent corruption: loop.ts parses tool arguments
+// defensively and degrades to { raw } on a parse failure (the call is then
+// refused back to the model, which can retry), so a truncated turn fails
+// loudly rather than doing something wrong. Scenarios that need roomier
 // replies can raise maxTokens via samplingParams.
 const DEFAULT_MAX_TOKENS = 150;
 const DEFAULT_FREQUENCY_PENALTY = 0.4;
@@ -137,8 +138,9 @@ export function resolveSamplingParams(
  * OpenAI client is constructed once per process per endpoint and reused, not
  * rebuilt on every chatCompletion call. `client.chat.completions.create`
  * returns a fresh request each time, so the connection pool and any keep-alive
- * state survive across tool steps; a map keyed by endpoint keeps the hot path
- * allocation-free while staying correct if a process ever serves multiple.
+ * state survive across tool steps; a map keyed by endpoint and API key keeps
+ * the hot path allocation-free while staying correct if a process ever serves
+ * multiple.
  */
 const clients = new Map<string, OpenAI>();
 
@@ -239,7 +241,7 @@ const DEFAULT_RETRY: RetryOptions = {
   baseDelayMs: 1_000,
   maxDelayMs: 30_000,
   // Generous on purpose: requests don't stream, so a slow-but-healthy
-  // completion (a CPU-backed local model over a long transcript, a reasoning
+  // completion (a CPU-backed local model over a long prompt, a reasoning
   // model) is indistinguishable from a hung one until it returns. 3 minutes
   // per attempt leaves room for one retry after a real hang inside the
   // 5-minute deadline, still far under a Run's maxRuntimeMs.
@@ -292,6 +294,12 @@ async function withTimeout<T>(timeoutMs: number, call: (signal: AbortSignal) => 
   }
 }
 
+/**
+ * Runs `call` under `retry`, re-running it on transient failures until it
+ * succeeds, `maxAttempts` is reached, or the next sleep would cross
+ * `deadline` (epoch ms, shared across the sampling fallback). Rethrows the
+ * last error; an attempt started past the deadline fails as a timeout.
+ */
 async function withRetry<T>(
   retry: RetryOptions,
   deadline: number,
@@ -344,6 +352,12 @@ function toResult(response: OpenAI.Chat.ChatCompletion): ChatCompletionResult | 
   };
 }
 
+/**
+ * One chat completion with tools, under the retry and sampling-fallback policy
+ * described at the top of this file. `retryOverrides` exists for tests. A
+ * response with no choices counts as a failure. Every failure is thrown as
+ * "Failed to reach LLM at <baseUrl>: <cause>".
+ */
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
@@ -374,8 +388,8 @@ export async function chatCompletion(
   } catch (error) {
     // OpenRouter fallback: a provider that rejects a sampling parameter (most
     // commonly frequency_penalty/presence_penalty/max_tokens/temperature) must
-    // not kill the Run. Retry once without any sampling, then surface if the
-    // stripped call still fails. See the module docstring for the contract.
+    // not kill the Run. Retry once without any sampling; if that fails too, log
+    // it and fall through to throw the original error. See the file header.
     if (isUnsupportedParameterError(error) && config.sampling) {
       log.warn(
         `provider rejected sampling params (${error instanceof Error ? error.message : String(error)}); retrying without sampling`,

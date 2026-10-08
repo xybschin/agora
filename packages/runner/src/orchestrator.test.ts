@@ -1,3 +1,7 @@
+// Pins superviseRunToTerminal against hand-written transcripts: each of the four
+// outcomes, budget charging that neither double-counts across polls nor drops
+// events sharing a seq, and the operator seeing the Assessment that ended the Run.
+// These run against the real poll interval, so the multi-poll cases take ~1s.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -39,7 +43,6 @@ describe("superviseRunToTerminal", () => {
     const transcriptDir = join(logDir, runId);
     Bun.spawnSync(["mkdir", "-p", transcriptDir]);
 
-    // Write a moderator_ended_run event to the transcript
     writeFileSync(
       join(transcriptDir, "events.jsonl"),
       JSON.stringify({
@@ -72,7 +75,6 @@ describe("superviseRunToTerminal", () => {
     const transcriptDir = join(logDir, runId);
     Bun.spawnSync(["mkdir", "-p", transcriptDir]);
 
-    // Create an empty transcript file
     writeFileSync(join(transcriptDir, "events.jsonl"), "");
 
     const result = await superviseRunToTerminal({
@@ -91,7 +93,6 @@ describe("superviseRunToTerminal", () => {
     const transcriptDir = join(logDir, runId);
     Bun.spawnSync(["mkdir", "-p", transcriptDir]);
 
-    // Write usage events that exceed the budget
     const usageLines = [
       { seq: 1, type: "usage", runId, agentId: "a1", promptTokens: 100, completionTokens: 50, timestamp: new Date().toISOString() },
       { seq: 2, type: "usage", runId, agentId: "a2", promptTokens: 100, completionTokens: 50, timestamp: new Date().toISOString() },
@@ -115,7 +116,6 @@ describe("superviseRunToTerminal", () => {
     const transcriptDir = join(logDir, runId);
     Bun.spawnSync(["mkdir", "-p", transcriptDir]);
 
-    // Create an empty transcript file
     writeFileSync(join(transcriptDir, "events.jsonl"), "");
 
     let shouldStop = false;
@@ -142,7 +142,6 @@ describe("superviseRunToTerminal", () => {
     const transcriptDir = join(logDir, runId);
     Bun.spawnSync(["mkdir", "-p", transcriptDir]);
 
-    // Write a single usage event
     writeFileSync(
       join(transcriptDir, "events.jsonl"),
       JSON.stringify({

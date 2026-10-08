@@ -1,3 +1,8 @@
+/**
+ * The TypeScript shapes of a Scenario and of the credentials file. schema.ts
+ * holds the zod schemas that validate these shapes at load time; the two are
+ * maintained by hand and must agree.
+ */
 export interface PersonaTraits {
   /**
    * 0-1: how far the agent's *public* position may drift from its *private*
@@ -38,6 +43,11 @@ export interface RosterAgent {
   matrixUserId: string;
 }
 
+/**
+ * Run-wide spending caps. The runner aborts the Run once summed `usage` events
+ * exceed `maxTotalTokens`. `maxTotalCostUsd` is accepted by the schema but not
+ * enforced anywhere yet.
+ */
 export interface BudgetConfig {
   maxTotalTokens?: number;
   maxTotalCostUsd?: number;
@@ -47,8 +57,9 @@ export interface BudgetConfig {
  * Sampling controls applied to an agent's LLM calls (mechanism F: bounded,
  * per-agent-varied output). Optional everywhere; when a field is omitted the
  * next-most-specific source wins, and the final fallback is llm.ts's own
- * defaults (maxTokens ~150, frequency/presence penalties 0.4, temperature
- * hashed from the agent id). Precedence: agent credential > Scenario > defaults.
+ * defaults (DEFAULT_MAX_TOKENS, DEFAULT_FREQUENCY_PENALTY,
+ * DEFAULT_PRESENCE_PENALTY, and a temperature hashed from the agent id by
+ * temperatureFromAgentId). Precedence: agent credential > Scenario > defaults.
  */
 export interface SamplingParams {
   /** Maximum tokens in the response (enforces brevity). */
@@ -71,7 +82,10 @@ export interface ScenarioConfig {
    * as another participant's message; the author reads it as its own.
    */
   seedAuthor: string;
-  /** Wall-clock runtime limit in milliseconds. The Run ends when this limit is exceeded (wall-clock backstop). */
+  /**
+   * Wall-clock runtime limit in milliseconds: the backstop for a Run the
+   * Moderator never ends. Exceeding it aborts the Run with `run_aborted`.
+   */
   maxRuntimeMs: number;
   /** Hard cap on tool-calling steps within a single agent's turn, to bound runaway loops. */
   maxToolStepsPerTurn: number;
@@ -79,11 +93,11 @@ export interface ScenarioConfig {
   agents: AgentDefinition[];
   /**
    * Matrix user ids of this Scenario's Readers: humans invited into each Run's
-   * room to watch it live (ADR-0003). Omitted means no Readers, which is not the
-   * same as an empty list to any behaviour -- there is simply nobody to invite.
+   * room to watch it live (ADR-0003). Omitted behaves exactly like an empty
+   * list: there is simply nobody to invite.
    *
    * A Reader carries no credentials of any kind. It is not in the roster, so it
-   * gets no container, no LLM credentials and no tick, and an invite takes only
+   * gets no container, no LLM credentials and no turns, and an invite takes only
    * a user id -- which is why there is nowhere for a Reader's token to be
    * stored.
    */

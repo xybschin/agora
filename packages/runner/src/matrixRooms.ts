@@ -13,8 +13,9 @@
  * the Client-Server API directly with raw fetch rather than pulling in
  * matrix-js-sdk. `csRequest` below is the single seam every runner-side
  * Client-Server call goes through: room creation, the invites, the joins, the
- * power levels write and read-back, the seed post, and the bootstrap script's
- * account registration. `clientPath` beside it is the seam every one of those
+ * Moderator's display name, the power levels write and read-back, the seed
+ * post, the bootstrap script's account registration, and reclamation's
+ * room-directory lookup and room delete. `clientPath` beside it is the seam every one of those
  * calls spells its urlPath through, so the API version lives in one place, and
  * `roomPath` beside that is the room-scoped half of the same bargain: the
  * `rooms/<id>` segment and its encoding are written once too, rather than
@@ -100,7 +101,7 @@ const RATE_LIMIT_RETRIES = 5;
  * option: a Run that admits five of its six agents is worse than one that
  * waits, and the first live Run died on it -- six invites fired back to back,
  * Synapse's per-user limiter admitted the first few and answered 429 with
- * `retry_after_ms`, and the whole Run failed at tick 0.
+ * `retry_after_ms`, and the whole Run failed during room setup.
  *
  * The retries are bounded and the wait is capped, so a homeserver that
  * ratelimits indefinitely fails as a real error rather than hanging.
@@ -163,7 +164,12 @@ function retryAfterMs(body: string): number {
 /**
  * Creates the room a Run happens in, owned by the setup account, and returns
  * its ID. Public rather than invite-only so a human Reader can be admitted
- * later without the homeserver needing a separate join rule.
+ * later without the homeserver needing a separate join rule. It is also listed
+ * in the public room directory (`visibility: public`), which is how
+ * `findRoomIdByName` finds it again when a Run is reclaimed (ADR-0006).
+ *
+ * The `public_chat` preset lets every member post; `establishRunRoomPermissions`
+ * overwrites that before any Reader is invited.
  */
 export async function createRoom(
   baseUrl: string,
@@ -287,11 +293,11 @@ export async function findRoomIdByName(
 }
 
 /**
- * Deletes a room outright rather than leaving it as a tombstoned shell. Owned by
- * the setup account — which created the room at Run start (ADR-0003) — so the
- * delete succeeds. This is the destructive half of reclamation: a caller (the
- * reclaim command) must only reach it after the Run's verdict is known to be
- * terminal, and only when an operator named the room explicitly.
+ * Asks the homeserver to delete a room outright rather than leaving it as a
+ * tombstoned shell, using the setup account's token (the account that created
+ * the room). This is the destructive half of reclamation: a caller (the reclaim
+ * command) must only reach it after the Run's verdict is known to be terminal,
+ * and only when an operator asked for the room explicitly (ADR-0006).
  */
 export async function deleteRoom(
   baseUrl: string,

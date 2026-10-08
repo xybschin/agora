@@ -1,3 +1,10 @@
+/**
+ * Pins llm.ts's contract with providers: per-agent sampling is resolved and
+ * actually sent, a provider that refuses a sampling parameter still gets a
+ * stripped call, transient failures are retried with bounded backoff, and a
+ * hanging provider cannot stall a Turn past the total deadline. Each of these
+ * is a way a single flaky provider could otherwise stall or kill a Run.
+ */
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import type { SamplingParams } from "@agora/shared";
 

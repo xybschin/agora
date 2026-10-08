@@ -1,3 +1,8 @@
+/**
+ * Entry point of the Moderator container (docker/moderator.Dockerfile): loads
+ * the env config, connects to the shared MCP server as the setup account, and
+ * runs ModeratorRuntime's loop until the Moderator ends the Run.
+ */
 import { createLogger } from "@agora/shared";
 import { loadModeratorEnvConfig } from "./moderator-config.js";
 import { MatrixMcpClient } from "./mcpClient.js";
@@ -20,12 +25,14 @@ const runtime = new ModeratorRuntime({
 const log = createLogger("moderator");
 log.info(`starting for run ${env.runId}`);
 
-// Run the moderator's event-driven loop. This returns when the Moderator
-// ends the Run (classifies the discussion STALE and posts the closing message),
-// or when the process is terminated.
+// Returns once the Moderator ends the Run (a STALE Assessment that posted the
+// closing message); otherwise runs until the container is stopped.
 runtime.runLoop().catch((err) => {
-  // A hard failure of the loop itself is fatal: the moderator's half of the Run
-  // would go silent, so exit and let the Run's supervision record the gap.
+  // runLoop already absorbs failed waits and failed Assessments, so reaching
+  // here means the loop itself broke (e.g. the event log is unwritable). Exit
+  // rather than linger: the runner's moderator watch warns once the heartbeats
+  // stop, and the Run can then end only on the wall-clock timeout or operator
+  // cancellation.
   log.error("moderator loop exited fatally:", err);
   process.exit(1);
 });

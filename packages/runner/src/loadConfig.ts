@@ -1,3 +1,8 @@
+/**
+ * Loads the runner's three inputs from disk: the Scenario, the credentials
+ * file, and the optional local Reader list. Validation lives in
+ * `@agora/shared`; this module only adds the file reading and YAML parsing.
+ */
 import { readFile } from "node:fs/promises";
 import yaml from "js-yaml";
 import {
@@ -8,6 +13,7 @@ import {
 
 export const loadScenario = loadScenarioConfig;
 
+/** Reads and validates `credentials.yaml`. Throws if the file is missing or fails the schema. */
 export async function loadCredentials(filePath: string) {
   const raw = yaml.load(await readFile(filePath, "utf8"));
   return parseCredentialsFile(raw);

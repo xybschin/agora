@@ -6,7 +6,8 @@
  * `baseDelayMs * 2^(n-1)`, capped at `maxDelayMs`, before the loop polls
  * again; a successful wait resets the count. Unlike TurnRetryOptions there is
  * no retry cap: waiting is what the loop is for, so it never gives up on the
- * room. `sleep` exists so tests can drive the timing.
+ * room. `sleep` exists so tests can drive the timing. Shared by the agent
+ * loop (loop.ts) and the Moderator (moderator.ts).
  */
 export interface WaitBackoffOptions {
   baseDelayMs: number;

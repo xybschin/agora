@@ -38,9 +38,8 @@ export function roomNameForRun(scenarioName: string, runId: string): string {
  * are not the same thing: a `RoomPermissionsError` means the room was assembled
  * wrong, while this means the room was right but an account the operator wanted
  * watching could not be admitted. Both abort the Run, and both must record a
- * terminal `run_aborted` event -- the difference is only that this one has to
- * name the Reader, since the reason (rather than the whole room) is what the
- * operator needs to act on.
+ * terminal `run_aborted` event; this one carries `readerId` so the abort reason
+ * names the account the operator has to fix.
  */
 export class ReaderInviteError extends Error {
   /** The Matrix user id that could not be invited, so the abort can name it. */
@@ -60,9 +59,11 @@ export class ReaderInviteError extends Error {
  * the rest of the Run to use.
  *
  * The setup account owns the room: it creates it, it sends the invites, and it
- * writes the room's permissions. Matrix only lets a user join as themselves, so
- * each agent's join runs with that agent's own access token -- the setup
- * account cannot admit anyone directly.
+ * writes the room's permissions. It also joins as the Moderator (ADR-0008),
+ * which sets its display name to "Moderator" -- a global profile change, not a
+ * per-room one. Matrix only lets a user join as themselves, so each agent's join
+ * runs with that agent's own access token -- the setup account cannot admit
+ * anyone directly.
  *
  * Agents are admitted in roster order rather than in parallel so the homeserver
  * sees a deterministic create-then-invite-then-join sequence, which is both
@@ -70,6 +71,13 @@ export class ReaderInviteError extends Error {
  * Permissions are pinned before any Reader is invited, so the invites that admit
  * humans to watch a Run only ever go to a room already known to be read-only for
  * them.
+ *
+ * Throws before touching the homeserver if a roster agent has no credentials
+ * entry; throws `RoomPermissionsError` if the read-back disagrees, and
+ * `ReaderInviteError` after attempting every Reader invite if any failed. A
+ * homeserver error from any other step propagates as-is. On any throw the room
+ * already created is left on the homeserver (ADR-0006: nothing is deleted
+ * implicitly).
  */
 export async function createRunRoom(params: {
   scenario: ScenarioConfig;

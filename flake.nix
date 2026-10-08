@@ -1,3 +1,7 @@
+# Nix flake providing the Agora development shell: Bun and Node for the
+# workspaces, Docker for the Matrix infra and per-Run containers, and beads
+# (the `bd` issue tracker). The shell hook creates the directories the runner
+# writes into (logs/, runner-generated/) and prints the common commands once.
 {
   description = "agora - LLM agent population simulator";
 
@@ -77,7 +81,7 @@
           '';
         };
 
-        # For compatibility, also provide a default shell
+        # Legacy `devShell` output, for Nix versions that predate devShells.
         devShell = self.devShells.${system}.default;
       }
     );
