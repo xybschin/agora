@@ -354,7 +354,6 @@ describe("ModeratorRuntime", () => {
         runId: RUN_ID,
         topic: TOPIC,
         roomId: ROOM_ID,
-        matrixSetupUserId: SETUP_USER_ID,
         logDir,
         mcp: createMcpStub() as never,
         llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
