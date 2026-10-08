@@ -83,7 +83,7 @@ cannot be reached by accident:
   superseded by ADR-0004. The principle stands on its own here: Run status is
   derived from `logs/<runId>/events.jsonl` at reclaim time, as
   `docs/CONTEXT.md` defines it.
-- Room deletion currently calls a Client-Server endpoint that Synapse does not
-  serve; deleting a room on Synapse needs its admin API and a server-admin
-  token. Until that is resolved (tracked as `agora-eni.4`), `--room` should
-  not be relied on.
+- Room deletion now goes through Synapse's admin API with a separate
+  server-admin credential, deletes the room before the logs, and resolves the
+  room by name through the admin room list rather than the public room
+  directory, which the dev Synapse never populated. See ADR-0009.

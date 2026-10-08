@@ -133,4 +133,10 @@ export interface CredentialsFile {
   matrixSetupUserId: string;
   matrix: MatrixServerConfig;
   agents: Record<string, AgentCredential>;
+  /**
+   * A server-admin account, read only by reclamation to delete a Run's room
+   * through Synapse's admin API (ADR-0009). Never written into a generated
+   * compose file, so no container holds it. Absent means `--room` refuses.
+   */
+  matrixAdmin?: { userId: string; accessToken: string };
 }

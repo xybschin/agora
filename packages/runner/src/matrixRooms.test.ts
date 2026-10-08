@@ -306,3 +306,155 @@ describe("csRequest", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(900);
   });
 });
+
+describe("deleteRoom", () => {
+  // No Client-Server endpoint deletes a room; Synapse does it through its admin
+  // API, which needs a server-admin token and purges in the background
+  // (ADR-0009). The delete is only done once the purge reports complete.
+  test("purges through the Synapse admin API with the admin token, then waits for completion", async () => {
+    const { deleteRoom } = await import("./matrixRooms.js");
+    let polls = 0;
+    const calls = recordFetch((call) => {
+      if (call.method === "DELETE") {
+        return new Response(JSON.stringify({ delete_id: "del1" }));
+      }
+      polls += 1;
+      const status = polls < 2 ? "active" : "complete";
+      return new Response(JSON.stringify({ delete_id: "del1", status }));
+    });
+
+    await deleteRoom("https://hs", "syt_admin", "!room:localhost", { pollIntervalMs: 0 });
+
+    expect(calls[0]).toEqual({
+      url: "https://hs/_synapse/admin/v2/rooms/!room%3Alocalhost",
+      method: "DELETE",
+      authorization: "Bearer syt_admin",
+      body: { purge: true },
+    });
+    const statusCalls = calls.slice(1);
+    expect(statusCalls.length).toBe(2);
+    for (const call of statusCalls) {
+      expect(call.url).toBe("https://hs/_synapse/admin/v2/rooms/delete_status/del1");
+      expect(call.method).toBe("GET");
+      expect(call.authorization).toBe("Bearer syt_admin");
+    }
+  });
+
+  test("fails when the purge reports failed, naming the homeserver's error", async () => {
+    const { deleteRoom } = await import("./matrixRooms.js");
+    recordFetch((call) =>
+      call.method === "DELETE"
+        ? new Response(JSON.stringify({ delete_id: "del2" }))
+        : new Response(JSON.stringify({ status: "failed", error: "boom" })),
+    );
+
+    await expect(
+      deleteRoom("https://hs", "syt_admin", "!room:localhost", { pollIntervalMs: 0 }),
+    ).rejects.toThrow(/boom/);
+  });
+
+  test("fails rather than waiting forever when the purge never completes", async () => {
+    const { deleteRoom } = await import("./matrixRooms.js");
+    recordFetch((call) =>
+      call.method === "DELETE"
+        ? new Response(JSON.stringify({ delete_id: "del3" }))
+        : new Response(JSON.stringify({ status: "active" })),
+    );
+
+    await expect(
+      deleteRoom("https://hs", "syt_admin", "!room:localhost", {
+        pollIntervalMs: 0,
+        timeoutMs: 20,
+      }),
+    ).rejects.toThrow(/did not complete/);
+  });
+
+  test("fails when the homeserver refuses the delete (e.g. the token is not an admin's)", async () => {
+    const { deleteRoom } = await import("./matrixRooms.js");
+    recordFetch(() => new Response('{"errcode":"M_FORBIDDEN"}', { status: 403 }));
+
+    await expect(
+      deleteRoom("https://hs", "syt_not_admin", "!room:localhost", { pollIntervalMs: 0 }),
+    ).rejects.toThrow(/HTTP 403/);
+  });
+});
+
+describe("registerAdminAccount", () => {
+  // Synapse's shared-secret registration: fetch a nonce, then POST the account
+  // with an HMAC-SHA1 over nonce, username, password and "admin", keyed by the
+  // homeserver's registration_shared_secret. The expected MAC is computed here
+  // independently from that definition.
+  test("registers a server admin with an HMAC over the nonce and returns its token", async () => {
+    const { createHmac } = await import("node:crypto");
+    const { registerAdminAccount } = await import("./matrixRooms.js");
+    const calls = recordFetch((call) =>
+      call.method === "GET"
+        ? new Response(JSON.stringify({ nonce: "n0nce" }))
+        : new Response(
+            JSON.stringify({ user_id: "@agora-admin:localhost", access_token: "syt_admin" }),
+          ),
+    );
+
+    const account = await registerAdminAccount("https://hs", "s3cret", "agora-admin", "pw");
+
+    expect(account).toEqual({ userId: "@agora-admin:localhost", accessToken: "syt_admin" });
+    expect(calls[0]?.url).toBe("https://hs/_synapse/admin/v1/register");
+    expect(calls[0]?.method).toBe("GET");
+    const expectedMac = createHmac("sha1", "s3cret")
+      .update("n0nce\0agora-admin\0pw\0admin")
+      .digest("hex");
+    expect(calls[1]).toEqual({
+      url: "https://hs/_synapse/admin/v1/register",
+      method: "POST",
+      authorization: undefined,
+      body: {
+        nonce: "n0nce",
+        username: "agora-admin",
+        password: "pw",
+        admin: true,
+        mac: expectedMac,
+      },
+    });
+  });
+});
+
+describe("findRoomIdByName", () => {
+  // Run rooms are created with visibility "public", but Synapse need not
+  // publish them to the room directory (the dev stack publishes none), so the
+  // lookup searches Synapse's admin room list instead (ADR-0009).
+  test("searches the admin room list by name and returns the exact match only", async () => {
+    const { findRoomIdByName } = await import("./matrixRooms.js");
+    const calls = recordFetch(() =>
+      new Response(
+        JSON.stringify({
+          rooms: [
+            { room_id: "!other:localhost", name: "Agora - s - s-20261008-0001 (copy)" },
+            { room_id: "!run:localhost", name: "Agora - s - s-20261008-0001" },
+          ],
+          total_rooms: 2,
+        }),
+      ),
+    );
+
+    const roomId = await findRoomIdByName("https://hs", "syt_admin", "Agora - s - s-20261008-0001");
+
+    expect(roomId).toBe("!run:localhost");
+    const url = new URL(calls[0]!.url);
+    expect(url.pathname).toBe("/_synapse/admin/v1/rooms");
+    expect(url.searchParams.get("search_term")).toBe("Agora - s - s-20261008-0001");
+    expect(calls[0]?.authorization).toBe("Bearer syt_admin");
+  });
+
+  test("follows next_batch and returns null when no room has the exact name", async () => {
+    const { findRoomIdByName } = await import("./matrixRooms.js");
+    const calls = recordFetch((call) =>
+      new URL(call.url).searchParams.get("from") === null
+        ? new Response(JSON.stringify({ rooms: [{ room_id: "!a:l", name: "x" }], next_batch: 1 }))
+        : new Response(JSON.stringify({ rooms: [{ room_id: "!b:l", name: "y" }] })),
+    );
+
+    expect(await findRoomIdByName("https://hs", "syt_admin", "Agora - none")).toBeNull();
+    expect(calls.length).toBe(2);
+    expect(new URL(calls[1]!.url).searchParams.get("from")).toBe("1");
+  });
+});

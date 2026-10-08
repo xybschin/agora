@@ -123,8 +123,14 @@ This removes `logs/<runId>/` off disk and deletes the Run's Matrix room
 transcript has no terminal event (`incomplete`), because that is the ambiguous
 case. Without a target (`--room` and/or `--logs`) it does nothing. Use
 `--all-eligible` instead of a runId to select every completed/aborted Run.
-Note: `--room` does not yet work against Synapse, which needs its admin API
-to delete a room (tracked as `agora-eni.4`); `--logs` works.
+
+`--room` needs a server-admin credential, `matrixAdmin` in `credentials.yaml`
+(see ADR-0009): Synapse only deletes rooms through its admin API. Bootstrap
+creates one when run with `SYNAPSE_REGISTRATION_SHARED_SECRET` set to the
+homeserver's `registration_shared_secret`; otherwise add an admin account's
+token by hand. `--logs` works without it. The room is deleted first, and the
+logs only once Synapse reports the room purged, so a failed room deletion
+leaves the Run intact and reclaimable.
 
 ### Watching a Run live
 

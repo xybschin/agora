@@ -123,31 +123,53 @@ export interface ReclaimResult {
  * did not record ending: an `incomplete` transcript is refused outright, before
  * any file or homeserver is touched.
  *
- * - Logs are reclaimed as a recursive removal of `logDir/<runId>`.
  * - A room is resolved from the runId by the room-name convention
- *   (`roomNameForRun`, "Agora - <scenario> - <runId>") against the homeserver's
- *   public room directory using the setup account's token — never from the
- *   transcript's `message` events, which record the room id only when a message
- *   was sent. The lookup runs for every eligible Run, even when only `--logs`
- *   was asked for; the room is deleted only when `targets.reclaimRoom` is set.
+ *   (`roomNameForRun`, "Agora - <scenario> - <runId>") against Synapse's admin
+ *   room list — never from the transcript's `message` events, which record the
+ *   room id only when a message was sent — and deleted through Synapse's admin
+ *   API. Both use `adminAccessToken` (ADR-0009), and neither happens unless
+ *   `targets.reclaimRoom` is set: a logs-only reclaim never calls the homeserver.
+ * - Logs are reclaimed as a recursive removal of `logDir/<runId>`.
  *
- * Logs are removed before the room is looked up, so a homeserver failure
- * (thrown) can leave a Run with its logs gone and its room intact. The verdict
- * is "room-not-found" only when the room was not in the directory *and* no logs
- * were removed; otherwise it is "reclaimed", and the two booleans say what
- * actually went.
+ * The room goes first and the logs only after Synapse reports its purge
+ * complete (ADR-0009): if the room deletion throws, the logs are untouched, so
+ * the Run keeps the transcript its eligibility is read from and can be
+ * reclaimed again. Asking for the room without an `adminAccessToken` throws
+ * before anything is read off the homeserver or removed from disk.
+ *
+ * The verdict is "room-not-found" only when the room was asked for and no room
+ * on the server has its name, *and* no logs were removed; otherwise it is "reclaimed", and the two booleans
+ * say what actually went.
  */
 export async function reclaimRun(params: {
   logDir: string;
   hostBaseUrl: string;
-  setupAccessToken: string;
+  /** A server admin's token; required only when `targets.reclaimRoom` is set. */
+  adminAccessToken?: string;
   runId: string;
   targets: ReclaimTargets;
 }): Promise<ReclaimResult> {
-  const { logDir, hostBaseUrl, setupAccessToken, runId, targets } = params;
+  const { logDir, hostBaseUrl, adminAccessToken, runId, targets } = params;
+  if (targets.reclaimRoom && !adminAccessToken) {
+    throw new Error(MISSING_ADMIN_MESSAGE);
+  }
   const events = await readRunTranscript(logDir, runId);
   if (!isEligibleForReclamation(events)) {
     return { runId, verdict: "incomplete-skipped", reclaimedLogs: false, reclaimedRoom: false };
+  }
+
+  let roomId: string | null = null;
+  let reclaimedRoom = false;
+  if (targets.reclaimRoom) {
+    // The scenario name is recovered from the runId using `parseRunId`, the
+    // single place that encodes the runId format (ADR-0003), so the writer
+    // (formatRunId) and reader (here) can never drift apart.
+    const { scenarioName } = parseRunId(runId);
+    roomId = await findRoomIdByName(hostBaseUrl, adminAccessToken!, roomNameForRun(scenarioName, runId));
+    if (roomId !== null) {
+      await deleteRoom(hostBaseUrl, adminAccessToken!, roomId);
+      reclaimedRoom = true;
+    }
   }
 
   let reclaimedLogs = false;
@@ -156,28 +178,16 @@ export async function reclaimRun(params: {
     reclaimedLogs = true;
   }
 
-  let reclaimedRoom = false;
-  // The scenario name is recovered from the runId using `parseRunId`, the
-  // single place that encodes the runId format (ADR-0003), so the writer
-  // (formatRunId) and reader (here) can never drift apart.
-  const { scenarioName } = parseRunId(runId);
-  const roomName = roomNameForRun(scenarioName, runId);
-  const roomId = await findRoomIdByName(hostBaseUrl, setupAccessToken, roomName);
-  if (roomId === null) {
-    return {
-      runId,
-      verdict: reclaimedLogs ? "reclaimed" : "room-not-found",
-      reclaimedLogs,
-      reclaimedRoom: false,
-    };
+  if (targets.reclaimRoom && roomId === null && !reclaimedLogs) {
+    return { runId, verdict: "room-not-found", reclaimedLogs, reclaimedRoom };
   }
-  if (targets.reclaimRoom) {
-    await deleteRoom(hostBaseUrl, setupAccessToken, roomId);
-    reclaimedRoom = true;
-  }
-
   return { runId, verdict: "reclaimed", reclaimedLogs, reclaimedRoom };
 }
+
+const MISSING_ADMIN_MESSAGE =
+  "--room needs a server-admin credential (matrixAdmin in credentials.yaml; " +
+  "see ADR-0009). Re-run bootstrap with SYNAPSE_REGISTRATION_SHARED_SECRET set, " +
+  "or add an admin account's token by hand. --logs works without it.";
 
 function printUsage(): void {
   console.error(
@@ -192,7 +202,8 @@ function printUsage(): void {
       "  <runId>       a logs/<runId> directory name",
       "  --all-eligible  select every terminal (completed/aborted) Run on disk",
       "  --logs        remove logs/<runId> off disk",
-      "  --room        delete the Run's Matrix room (resolved by its room name)",
+      "  --room        delete the Run's Matrix room (resolved by its room name);",
+      "                needs the matrixAdmin credential (ADR-0009)",
     ].join("\n"),
   );
 }
@@ -228,14 +239,22 @@ export async function main(args: string[]): Promise<void> {
 
   const credentials = await loadCredentials(credentialsPath);
   const { hostBaseUrl } = credentials.matrix;
-  const setupAccessToken = credentials.matrixSetupAccessToken;
+  const adminAccessToken = credentials.matrixAdmin?.accessToken;
+
+  // Refuse up front rather than per Run, so a missing credential is one clear
+  // error instead of the same failure repeated for every selected Run.
+  if (reclaimRoom && !adminAccessToken) {
+    log.error(MISSING_ADMIN_MESSAGE);
+    process.exitCode = 1;
+    return;
+  }
 
   for (const runId of runIds) {
     try {
       const result = await reclaimRun({
         logDir: LOG_DIR,
         hostBaseUrl,
-        setupAccessToken,
+        adminAccessToken,
         runId,
         targets: { reclaimLogs, reclaimRoom },
       });

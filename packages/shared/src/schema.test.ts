@@ -59,6 +59,22 @@ describe("parseCredentialsFile", () => {
     expect(parsed.agents["alex"]?.matrixUserId).toBe("@agora-alex:localhost");
   });
 
+  test("accepts an optional server-admin credential, used only for reclaiming rooms", () => {
+    // ADR-0009: a separate admin account, never the setup account.
+    expect(parseCredentialsFile(matrixCredentials).matrixAdmin).toBeUndefined();
+    const parsed = parseCredentialsFile({
+      ...matrixCredentials,
+      matrixAdmin: { userId: "@agora-admin:localhost", accessToken: "syt_admin" },
+    });
+    expect(parsed.matrixAdmin).toEqual({
+      userId: "@agora-admin:localhost",
+      accessToken: "syt_admin",
+    });
+    expect(() =>
+      parseCredentialsFile({ ...matrixCredentials, matrixAdmin: { userId: "@a:localhost" } }),
+    ).toThrow();
+  });
+
   test("carries no room id, because each Run creates its own room", () => {
     // A stale credentials.yaml written by the old bootstrap still has one; the
     // schema drops it rather than letting a half-reused room back in.

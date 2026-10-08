@@ -14,14 +14,16 @@
  * matrix-js-sdk. `csRequest` below is the single seam every runner-side
  * Client-Server call goes through: room creation, the invites, the joins, the
  * Moderator's display name, the power levels write and read-back, the seed
- * post, the bootstrap script's account registration, and reclamation's
- * room-directory lookup and room delete. `clientPath` beside it is the seam every one of those
+ * post, the bootstrap script's account registration, and -- through the Synapse
+ * admin API, which needs a server-admin token (ADR-0009) -- the admin account's
+ * registration and reclamation's room lookup and room delete. `clientPath` beside it is the seam every one of those
  * calls spells its urlPath through, so the API version lives in one place, and
  * `roomPath` beside that is the room-scoped half of the same bargain: the
  * `rooms/<id>` segment and its encoding are written once too, rather than
  * re-spelled and re-escaped at each of the four calls that address a room.
  */
 
+import { createHmac } from "node:crypto";
 import { createLogger } from "@agora/shared";
 
 const log = createLogger("matrix");
@@ -164,9 +166,10 @@ function retryAfterMs(body: string): number {
 /**
  * Creates the room a Run happens in, owned by the setup account, and returns
  * its ID. Public rather than invite-only so a human Reader can be admitted
- * later without the homeserver needing a separate join rule. It is also listed
- * in the public room directory (`visibility: public`), which is how
- * `findRoomIdByName` finds it again when a Run is reclaimed (ADR-0006).
+ * later without the homeserver needing a separate join rule. It also asks for
+ * `visibility: public`, but a homeserver may decline to publish it to the room
+ * directory (the dev Synapse publishes none), so reclamation finds the room by
+ * name through the admin API instead (`findRoomIdByName`, ADR-0009).
  *
  * The `public_chat` preset lets every member post; `establishRunRoomPermissions`
  * overwrites that before any Reader is invited.
@@ -254,19 +257,19 @@ export async function setDisplayName(
 }
 
 /**
- * Resolves a room's id from its display name against the homeserver's public
- * room directory. Each Run's room is created `visibility: public`
- * (see `createRoom`), so it appears there under the name `roomNameForRun` gave
- * it. Reclamation (packages/runner/src/reclaim.ts) resolves a runId to its room
- * by this lookup rather than reading the room id off the transcript's `message`
- * events, because that id is recorded only on `message` events — a Run that
- * never sent a message would leave no room id in its transcript, while the
- * room-name convention always holds.
+ * Resolves a room's id from its display name by searching Synapse's admin room
+ * list, so `accessToken` must be a server admin's (ADR-0009). Reclamation
+ * (packages/runner/src/reclaim.ts) resolves a runId to its room by the name
+ * `roomNameForRun` gave it rather than reading the room id off the transcript's
+ * `message` events, because that id is recorded only on `message` events — a
+ * Run that never sent a message would leave no room id in its transcript, while
+ * the room-name convention always holds.
  *
- * The directory is paginated with `since` cursors until a room whose `name`
- * matches exactly is found or the pages run out; a directory that does not
- * enumerate (empty chunk, server refusing) returns null so the caller can
- * report the room as not found rather than fail the whole reclamation.
+ * The admin list rather than the public room directory: a Run's room asks to be
+ * published, but a homeserver may refuse, and the dev Synapse publishes none,
+ * so a directory lookup never found a Run's room there. The search is a
+ * substring match, so pages (followed by `next_batch`) are scanned for a room
+ * whose `name` is exactly `name`; null means no room on the server has it.
  */
 export async function findRoomIdByName(
   baseUrl: string,
@@ -274,40 +277,113 @@ export async function findRoomIdByName(
   name: string,
 ): Promise<string | null> {
   const PAGE_LIMIT = 100;
-  let since: string | undefined;
+  let from: number | undefined;
   for (;;) {
-    const params = `limit=${PAGE_LIMIT}${since ? `&since=${encodeURIComponent(since)}` : ""}`;
-    const res = await csRequest<{ chunk?: Array<{ room_id: string; name?: string }>; next_batch?: string }>(
-      baseUrl,
-      "GET",
-      clientPath(`publicRooms?${params}`),
-      { accessToken },
-    );
-    for (const room of res.chunk ?? []) {
+    const params = new URLSearchParams({ search_term: name, limit: String(PAGE_LIMIT) });
+    if (from !== undefined) params.set("from", String(from));
+    const res = await csRequest<{
+      rooms?: Array<{ room_id: string; name?: string | null }>;
+      next_batch?: number;
+    }>(baseUrl, "GET", synapseAdminPath(`v1/rooms?${params}`), { accessToken });
+    for (const room of res.rooms ?? []) {
       if (room.name === name) return room.room_id;
     }
-    const next = res.next_batch;
-    if (!next || !next.length || (res.chunk ?? []).length === 0) return null;
-    since = next;
+    if (res.next_batch === undefined || (res.rooms ?? []).length === 0) return null;
+    from = res.next_batch;
   }
 }
 
 /**
- * Asks the homeserver to delete a room outright rather than leaving it as a
- * tombstoned shell, using the setup account's token (the account that created
- * the room). This is the destructive half of reclamation: a caller (the reclaim
- * command) must only reach it after the Run's verdict is known to be terminal,
- * and only when an operator asked for the room explicitly (ADR-0006).
+ * Builds the absolute urlPath of a Synapse admin API call:
+ * `synapseAdminPath("v2/rooms/<id>")`. The admin API is Synapse's own, outside
+ * the Client-Server API, so it has its own prefix and versions each endpoint
+ * separately -- which is why the version is part of the suffix here rather than
+ * fixed like `CLIENT_PREFIX`.
+ */
+export function synapseAdminPath(suffix: string): string {
+  return `/_synapse/admin/${suffix}`;
+}
+
+/** How often `deleteRoom` asks Synapse whether its background purge is done. */
+const DELETE_STATUS_POLL_MS = 1_000;
+/** How long `deleteRoom` waits for the purge before treating it as failed. */
+const DELETE_STATUS_TIMEOUT_MS = 120_000;
+
+/**
+ * Deletes a room from the homeserver and purges its history, returning only
+ * once Synapse reports the purge complete. This is the destructive half of
+ * reclamation: a caller must only reach it after the Run's verdict is known to
+ * be terminal, and only when an operator asked for the room (ADR-0006).
+ *
+ * No Client-Server endpoint deletes a room, so this uses Synapse's admin API
+ * (ADR-0009), and `adminAccessToken` must belong to a server admin -- not the
+ * setup account, whose token is handed to the Moderator's container. Synapse
+ * runs the purge in the background and hands back a `delete_id`; this polls its
+ * status every `DELETE_STATUS_POLL_MS` and throws if the purge reports `failed`
+ * or has not completed within `DELETE_STATUS_TIMEOUT_MS`. A thrown error means
+ * the room may still exist, which is why reclamation removes a Run's logs only
+ * after this resolves.
  */
 export async function deleteRoom(
   baseUrl: string,
-  accessToken: string,
+  adminAccessToken: string,
   roomId: string,
+  opts: { pollIntervalMs?: number; timeoutMs?: number } = {},
 ): Promise<void> {
-  // The delete endpoint has no room-relative suffix — it is exactly
-  // /rooms/{roomId} — so it is spelt here rather than through roomPath, which
-  // appends a trailing segment and its joining slash.
-  await csRequest(baseUrl, "DELETE", clientPath(`rooms/${encodeURIComponent(roomId)}`), {
-    accessToken,
+  const pollIntervalMs = opts.pollIntervalMs ?? DELETE_STATUS_POLL_MS;
+  const timeoutMs = opts.timeoutMs ?? DELETE_STATUS_TIMEOUT_MS;
+
+  const { delete_id: deleteId } = await csRequest<{ delete_id: string }>(
+    baseUrl,
+    "DELETE",
+    synapseAdminPath(`v2/rooms/${encodeURIComponent(roomId)}`),
+    { accessToken: adminAccessToken, body: { purge: true } },
+  );
+
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const status = await csRequest<{ status: string; error?: string }>(
+      baseUrl,
+      "GET",
+      synapseAdminPath(`v2/rooms/delete_status/${encodeURIComponent(deleteId)}`),
+      { accessToken: adminAccessToken },
+    );
+    if (status.status === "complete") return;
+    if (status.status === "failed") {
+      throw new Error(`deleting room ${roomId} failed: ${status.error ?? "no error given"}`);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `deleting room ${roomId} did not complete within ${timeoutMs}ms (last status: ${status.status})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
+/**
+ * Registers a server-admin account through Synapse's shared-secret
+ * registration, for the credential reclamation deletes rooms with (ADR-0009).
+ *
+ * `sharedSecret` is the homeserver's `registration_shared_secret`; it never
+ * leaves this process -- only an HMAC-SHA1 over the nonce, username, password
+ * and the literal "admin" is sent. Unlike `/register` this needs no open
+ * registration, but it fails if the homeserver has no shared secret configured
+ * or the username is taken.
+ */
+export async function registerAdminAccount(
+  baseUrl: string,
+  sharedSecret: string,
+  username: string,
+  password: string,
+): Promise<{ userId: string; accessToken: string }> {
+  const path = synapseAdminPath("v1/register");
+  const { nonce } = await csRequest<{ nonce: string }>(baseUrl, "GET", path);
+  const mac = createHmac("sha1", sharedSecret)
+    .update(`${nonce}\0${username}\0${password}\0admin`)
+    .digest("hex");
+  const res = await csRequest<{ user_id: string; access_token: string }>(baseUrl, "POST", path, {
+    body: { nonce, username, password, admin: true, mac },
   });
+  return { userId: res.user_id, accessToken: res.access_token };
 }

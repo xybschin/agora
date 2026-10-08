@@ -270,6 +270,16 @@ export const credentialsFileSchema = z.object({
   matrixSetupUserId: z.string(),
   matrix: matrixConfigSchema,
   agents: z.record(z.string(), agentCredentialSchema),
+  // A server-admin account, read only by reclamation to delete rooms through
+  // Synapse's admin API (ADR-0009). Optional: without it `--room` refuses and
+  // everything else works. Deliberately not the setup account, whose token is
+  // handed to the Moderator's container.
+  matrixAdmin: z
+    .object({
+      userId: z.string(),
+      accessToken: z.string(),
+    })
+    .optional(),
 });
 
 /**

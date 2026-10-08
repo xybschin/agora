@@ -135,8 +135,8 @@ describe("readRunTranscript / listRunIds", () => {
 describe("reclaimRun", () => {
   // A room named "Agora - <scenario> - <runId>" is the join between a Run and
   // its room (ADR-0006): the runId (the logs/<runId> directory name) resolves
-  // to the room by that naming convention against the homeserver's public room
-  // directory. It must not depend on the transcript's message events, so a Run
+  // to the room by that naming convention against Synapse's admin room list
+  // (ADR-0009). It must not depend on the transcript's message events, so a Run
   // that never sent a message still resolves.
   //
   // The real fetch is captured once when the suite starts and restored after
@@ -147,21 +147,43 @@ describe("reclaimRun", () => {
     globalThis.fetch = originalFetch;
   });
 
-  function stubPublicRooms(rooms: Array<{ room_id: string; name: string }>): string[] {
-    const deleted: string[] = [];
+  interface HomeserverStub {
+    /** Every admin-API room delete, as "<url> <Authorization header>". */
+    deleted: string[];
+    /** Every request made, in order, so a test can assert nothing was sent. */
+    requests: string[];
+  }
+
+  /**
+   * Stubs the homeserver: the admin room list returns `rooms`, and the
+   * Synapse admin API accepts a room delete and reports its purge complete --
+   * or `failed` when `purgeFails` is set.
+   */
+  function stubPublicRooms(
+    rooms: Array<{ room_id: string; name: string }>,
+    opts: { purgeFails?: boolean } = {},
+  ): HomeserverStub {
+    const stub: HomeserverStub = { deleted: [], requests: [] };
     type FetchFn = typeof globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<FetchFn>[0], init?: Parameters<FetchFn>[1]) => {
       const url = String(input);
-      if (url.includes("/publicRooms")) {
-        return new Response(JSON.stringify({ chunk: rooms }));
+      stub.requests.push(url);
+      if (new URL(url).pathname === "/_synapse/admin/v1/rooms") {
+        return new Response(JSON.stringify({ rooms }));
       }
-      if (url.includes("/rooms/") && init?.method === "DELETE") {
-        deleted.push(url);
-        return new Response("{}");
+      if (url.includes("/_synapse/admin/v2/rooms/delete_status/")) {
+        return new Response(
+          JSON.stringify(opts.purgeFails ? { status: "failed", error: "purge broke" } : { status: "complete" }),
+        );
+      }
+      if (url.includes("/_synapse/admin/v2/rooms/") && init?.method === "DELETE") {
+        const headers = (init.headers ?? {}) as Record<string, string>;
+        stub.deleted.push(`${url} ${headers["Authorization"]}`);
+        return new Response(JSON.stringify({ delete_id: "del" }));
       }
       return new Response("{}");
     }) as FetchFn;
-    return deleted;
+    return stub;
   }
 
   test("refuses an incomplete run outright, touching neither logs nor room", async () => {
@@ -170,14 +192,14 @@ describe("reclaimRun", () => {
       eventHere("started"),
       eventHere("message"),
     ]);
-    const deleted = stubPublicRooms([
+    const { deleted } = stubPublicRooms([
       { room_id: "!found:localhost", name: "Agora - polarization - polarization-20251001-1430" },
     ]);
 
     const result = await reclaimRun({
       logDir,
       hostBaseUrl: "https://homeserver",
-      setupAccessToken: "tok",
+      adminAccessToken: "admintok",
       runId: "polarization-20251001-1430",
       targets: { reclaimLogs: true, reclaimRoom: true },
     });
@@ -196,14 +218,14 @@ describe("reclaimRun", () => {
       eventHere("started"),
       eventHere("completed"),
     ]);
-    const deleted = stubPublicRooms([
+    const { deleted } = stubPublicRooms([
       { room_id: "!found:localhost", name: "Agora - polarization - polarization-20251001-1431" },
     ]);
 
     const result = await reclaimRun({
       logDir,
       hostBaseUrl: "https://homeserver",
-      setupAccessToken: "tok",
+      adminAccessToken: "admintok",
       runId: "polarization-20251001-1431",
       targets: { reclaimLogs: true, reclaimRoom: true },
     });
@@ -213,7 +235,11 @@ describe("reclaimRun", () => {
     expect(result.reclaimedRoom).toBe(true);
     // Logs are gone from disk; the room was deleted by id from the directory.
     expect(await listRunIds(logDir)).toEqual([]);
-    expect(deleted).toEqual(["https://homeserver/_matrix/client/v3/rooms/!found%3Alocalhost"]);
+    // Deleted through the Synapse admin API with the admin token, never the
+    // setup account's (ADR-0009).
+    expect(deleted).toEqual([
+      "https://homeserver/_synapse/admin/v2/rooms/!found%3Alocalhost Bearer admintok",
+    ]);
   });
 
   test("resolves the room by name even when the transcript has no message events", async () => {
@@ -225,14 +251,14 @@ describe("reclaimRun", () => {
       eventHere("started"),
       eventHere("aborted"),
     ]);
-    const deleted = stubPublicRooms([
+    const { deleted } = stubPublicRooms([
       { room_id: "!theroom:localhost", name: "Agora - polarization - polarization-20251001-1432" },
     ]);
 
     const result = await reclaimRun({
       logDir,
       hostBaseUrl: "https://homeserver",
-      setupAccessToken: "tok",
+      adminAccessToken: "admintok",
       runId: "polarization-20251001-1432",
       targets: { reclaimRoom: true, reclaimLogs: false },
     });
@@ -246,12 +272,12 @@ describe("reclaimRun", () => {
       eventHere("started"),
       eventHere("completed"),
     ]);
-    const deleted = stubPublicRooms([]); // directory is empty
+    const { deleted } = stubPublicRooms([]); // directory is empty
 
     const result = await reclaimRun({
       logDir,
       hostBaseUrl: "https://homeserver",
-      setupAccessToken: "tok",
+      adminAccessToken: "admintok",
       runId: "polarization-20251001-1433",
       targets: { reclaimRoom: true, reclaimLogs: false },
     });
@@ -276,7 +302,7 @@ describe("reclaimRun", () => {
     const parsed = parseRunId(runId);
     expect(parsed.scenarioName).toBe("complex-scenario-name-with-dashes");
 
-    const deleted = stubPublicRooms([
+    const { deleted } = stubPublicRooms([
       {
         room_id: "!theroom:localhost",
         name: `Agora - ${parsed.scenarioName} - ${runId}`,
@@ -286,11 +312,75 @@ describe("reclaimRun", () => {
     const result = await reclaimRun({
       logDir,
       hostBaseUrl: "https://homeserver",
-      setupAccessToken: "tok",
+      adminAccessToken: "admintok",
       runId,
       targets: { reclaimRoom: true, reclaimLogs: false },
     });
     expect(result.reclaimedRoom).toBe(true);
     expect(deleted.length).toBe(1);
+  });
+
+  test("keeps the logs when deleting the room fails, so the Run stays reclaimable", async () => {
+    const logDir = await makeLogDir();
+    const runId = "polarization-20251001-1435";
+    await writeTranscript(logDir, runId, [eventHere("started"), eventHere("completed")]);
+    stubPublicRooms(
+      [{ room_id: "!found:localhost", name: `Agora - polarization - ${runId}` }],
+      { purgeFails: true },
+    );
+
+    await expect(
+      reclaimRun({
+        logDir,
+        hostBaseUrl: "https://homeserver",
+          adminAccessToken: "admintok",
+        runId,
+        targets: { reclaimLogs: true, reclaimRoom: true },
+      }),
+    ).rejects.toThrow(/purge broke/);
+    // The room is deleted before the logs (ADR-0009): a failed purge leaves the
+    // transcript in place, so the Run is still eligible next time.
+    expect(await listRunIds(logDir)).toEqual([runId]);
+  });
+
+  test("refuses --room without an admin credential before touching anything", async () => {
+    const logDir = await makeLogDir();
+    const runId = "polarization-20251001-1436";
+    await writeTranscript(logDir, runId, [eventHere("started"), eventHere("completed")]);
+    const { requests } = stubPublicRooms([
+      { room_id: "!found:localhost", name: `Agora - polarization - ${runId}` },
+    ]);
+
+    await expect(
+      reclaimRun({
+        logDir,
+        hostBaseUrl: "https://homeserver",
+          runId,
+        targets: { reclaimLogs: true, reclaimRoom: true },
+      }),
+    ).rejects.toThrow(/admin/);
+    expect(requests).toEqual([]);
+    expect(await listRunIds(logDir)).toEqual([runId]);
+  });
+
+  test("reclaims logs alone without an admin credential, and without asking the homeserver", async () => {
+    const logDir = await makeLogDir();
+    const runId = "polarization-20251001-1437";
+    await writeTranscript(logDir, runId, [eventHere("started"), eventHere("completed")]);
+    const { requests } = stubPublicRooms([
+      { room_id: "!found:localhost", name: `Agora - polarization - ${runId}` },
+    ]);
+
+    const result = await reclaimRun({
+      logDir,
+      hostBaseUrl: "https://homeserver",
+      runId,
+      targets: { reclaimLogs: true, reclaimRoom: false },
+    });
+
+    expect(result).toEqual({ runId, verdict: "reclaimed", reclaimedLogs: true, reclaimedRoom: false });
+    expect(await listRunIds(logDir)).toEqual([]);
+    // The room is neither looked up nor deleted when it was not asked for.
+    expect(requests).toEqual([]);
   });
 });

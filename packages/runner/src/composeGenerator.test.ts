@@ -136,6 +136,22 @@ describe("generateComposeFile", () => {
     }
   });
 
+  test("never hands the server-admin token to any container", () => {
+    // ADR-0009: the admin credential is read only by reclamation on the host.
+    // A container holding it could delete or take over any room on the server.
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials: {
+        ...credentials,
+        matrixAdmin: { userId: "@agora-admin:localhost", accessToken: "syt_admin_secret" },
+      },
+    });
+    expect(yamlText).not.toContain("syt_admin_secret");
+    expect(yamlText).not.toContain("@agora-admin:localhost");
+  });
+
   test("tells the shared MCP server which room this Run is in", () => {
     // One mcp_server serves every agent, and it has to be told the room rather
     // than asking each model for it. The first live Run had two of six agents

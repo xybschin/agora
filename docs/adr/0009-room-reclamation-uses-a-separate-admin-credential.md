@@ -22,6 +22,15 @@ Synapse's shared-secret admin registration when it is given the homeserver's
 `registration_shared_secret`; an operator can equally paste in a token for an
 admin account made by hand.
 
+The same credential finds the room. ADR-0006 resolved a Run's room by name
+against the public room directory, but a homeserver may decline to publish a
+room even when `createRoom` asks for `visibility: public`, and the dev Synapse
+published none of the Run rooms on it — so that lookup had never found a room.
+The room is now found by its name in Synapse's admin room list, which sees
+every room on the server. The join is still the room-name convention
+(`roomNameForRun`); only the place it is looked up changed, and a logs-only
+reclaim no longer calls the homeserver at all.
+
 Reclamation also deletes the room **before** the logs, and only removes
 `logs/<runId>` once Synapse reports the room purge complete. A homeserver
 failure then leaves both artefacts in place and the Run still eligible, rather
@@ -50,9 +59,12 @@ the surviving room unreclaimable by the normal path.
 - `credentialsFileSchema` gains an optional admin credential; nothing else in
   the Run path reads it.
 - `--room` needs the admin credential and fails before touching anything when
-  it is absent.
+  it is absent. Reclamation no longer uses the setup account's token at all.
+- Verified on the dev stack (2026-10-08): with no admin credential `--room`
+  refused and left the logs; with one, a throwaway Run's room was found by
+  name, purged (admin API then answers `M_NOT_FOUND`), and its logs removed.
 - A room reclaim waits on Synapse's asynchronous delete status, so it can take
   noticeably longer than a logs-only reclaim.
-- The dev stack's `homeserver.yaml` must have a real
-  `registration_shared_secret` (not the placeholder) for bootstrap to mint the
-  admin account.
+- Anyone holding the homeserver's `registration_shared_secret` can mint a
+  server admin. The dev stack's `homeserver.yaml` ships a placeholder string,
+  which works but is public; replace it on any homeserver others can reach.
