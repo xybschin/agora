@@ -23,8 +23,8 @@ export interface AgentRuntimeConfig {
   topic: string;
   roomId: string;
   matrixUserId: string;
-  /** Per-turn cap on tool-calling rounds (the Scenario's maxToolStepsPerTurn; tick-era name). */
-  maxToolStepsPerTick: number;
+  /** Per-turn cap on tool-calling rounds (the Scenario's maxToolStepsPerTurn). */
+  maxToolStepsPerTurn: number;
   logDir: string;
   mcp: MatrixMcpClient;
   llm: LlmConfig;
@@ -248,7 +248,7 @@ export class AgentRuntime {
    * send), leaving the bracket for runLoop to close with `agent_turn_failed`.
    */
   async runTurn(): Promise<TurnResult> {
-    const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTick, logDir, mcp, llm } =
+    const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTurn, logDir, mcp, llm } =
       this.config;
 
     this.turn += 1;
@@ -281,7 +281,7 @@ export class AgentRuntime {
           persona: agentDef.persona,
           topic,
           currentStance: this.currentStance,
-          isFirstTick: !this.hasCompletedTurn,
+          isFirstTurn: !this.hasCompletedTurn,
           ownMessageHistory: this.ownMessageHistory,
         }),
       },
@@ -300,7 +300,7 @@ export class AgentRuntime {
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
 
-    for (let step = 0; step < maxToolStepsPerTick; step++) {
+    for (let step = 0; step < maxToolStepsPerTurn; step++) {
       const { message, usage } = await chatCompletion(llm, messages, tools);
       messages.push(message);
 

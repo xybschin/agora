@@ -27,7 +27,6 @@ export interface ModeratorRuntimeConfig {
   /** The Scenario's topic, so the Moderator can judge whether arguments are on-topic. */
   topic: string;
   roomId: string;
-  matrixSetupUserId: string;
   logDir: string;
   /**
    * The Scenario's agents with their Matrix users. A STALE Assessment is
@@ -392,7 +391,7 @@ export class ModeratorRuntime {
    * runLoop records and retries those.
    */
   async runTurn(opts?: { quietForMs?: number }): Promise<ModeratorTurnResult> {
-    const { runId, topic, roomId, matrixSetupUserId, logDir, mcp, llm } = this.config;
+    const { runId, topic, roomId, logDir, mcp, llm } = this.config;
     const now = this.config.now ?? Date.now;
     this.turn += 1;
     this.postedThisTurn = false;

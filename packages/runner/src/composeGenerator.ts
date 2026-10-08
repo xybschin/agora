@@ -90,9 +90,8 @@ export function generateComposeFile(params: {
         // Containers reach the self-hosted Synapse over the shared infra
         // network, so they use the container-facing base URL, not the host one.
         MATRIX_HOME_SERVER_URL: credentials.matrix.containerBaseUrl,
-        // The per-turn tool-step cap; the variable keeps its tick-era name
-        // because the agent's config still reads it under that name.
-        MAX_TOOL_STEPS_PER_TICK: String(scenario.maxToolStepsPerTurn),
+        // The per-turn tool-step cap, read by the agent's config.ts.
+        MAX_TOOL_STEPS_PER_TURN: String(scenario.maxToolStepsPerTurn),
         MCP_URL: "http://mcp_server:3000/mcp",
         LLM_BASE_URL: cred.llmBaseUrl,
         LLM_API_KEY: cred.llmApiKey,

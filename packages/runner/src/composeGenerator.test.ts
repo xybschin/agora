@@ -96,6 +96,22 @@ describe("generateComposeFile", () => {
     expect(yamlText).not.toContain("http://localhost:8008");
   });
 
+  test("passes the per-turn tool-step cap under the name the agent config reads", () => {
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string> }>;
+    }).services;
+    // packages/agent/src/config.ts reads MAX_TOOL_STEPS_PER_TURN.
+    expect(services["agent_alex"]?.environment["MAX_TOOL_STEPS_PER_TURN"]).toBe(
+      String(scenario.maxToolStepsPerTurn),
+    );
+  });
+
   test("tells the shared MCP server which room this Run is in", () => {
     // One mcp_server serves every agent, and it has to be told the room rather
     // than asking each model for it. The first live Run had two of six agents
@@ -141,7 +157,7 @@ describe("generateComposeFile", () => {
     expect(services["moderator"]?.environment["SCENARIO_TOPIC"]).toBe(scenario.topic);
   });
 
-  test("gives a declared Reader no container, no credentials and no tick", () => {
+  test("gives a declared Reader no container, no credentials and no turns", () => {
     // A Reader is a human in the room, not a member of the population: it is
     // deliberately not in the roster, so nothing here can grow a service for it.
     // The whole file coming out byte-identical is the proof -- same services,

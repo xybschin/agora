@@ -15,10 +15,9 @@ export interface AgentEnvConfig {
   roomId: string;
   /**
    * The per-turn cap on tool-calling rounds: the Scenario's
-   * `maxToolStepsPerTurn`. This field and its env var MAX_TOOL_STEPS_PER_TICK
-   * still carry their tick-era names.
+   * `maxToolStepsPerTurn`, read from the env var MAX_TOOL_STEPS_PER_TURN.
    */
-  maxToolStepsPerTick: number;
+  maxToolStepsPerTurn: number;
   logDir: string;
   mcpUrl: string;
   matrixAccessToken: string;
@@ -62,7 +61,7 @@ export function loadAgentEnvConfig(): AgentEnvConfig {
     agentDefinition,
     topic: requireEnv("SCENARIO_TOPIC"),
     roomId: requireEnv("MATRIX_ROOM_ID"),
-    maxToolStepsPerTick: Number(process.env.MAX_TOOL_STEPS_PER_TICK ?? 6),
+    maxToolStepsPerTurn: Number(process.env.MAX_TOOL_STEPS_PER_TURN ?? 6),
     logDir: process.env.LOG_DIR ?? "/logs",
     mcpUrl: requireEnv("MCP_URL"),
     matrixAccessToken: requireEnv("MATRIX_ACCESS_TOKEN"),

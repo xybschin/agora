@@ -22,7 +22,7 @@ const runtime = new AgentRuntime({
   topic: env.topic,
   roomId: env.roomId,
   matrixUserId: env.matrixUserId,
-  maxToolStepsPerTick: env.maxToolStepsPerTick,
+  maxToolStepsPerTurn: env.maxToolStepsPerTurn,
   logDir: env.logDir,
   mcp,
   llm: env.llm,
