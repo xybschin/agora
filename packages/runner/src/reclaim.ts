@@ -119,6 +119,80 @@ export interface ReclaimResult {
 }
 
 /**
+ * Throws unless `runId` names a single directory directly inside the logs
+ * directory. A runId is joined onto `logDir` and the result removed
+ * recursively, so a separator or a `.`/`..` segment could aim the removal
+ * outside `logs/` (agora-eni.9).
+ */
+function assertSafeRunId(runId: string): void {
+  if (
+    runId === "" ||
+    runId === "." ||
+    runId === ".." ||
+    runId.includes("/") ||
+    runId.includes("\\") ||
+    path.basename(runId) !== runId
+  ) {
+    throw new Error(`Refusing runId ${JSON.stringify(runId)}: it must be a logs/<runId> directory name.`);
+  }
+}
+
+export interface ReclaimArgs {
+  runIds: string[] | "all";
+  reclaimLogs: boolean;
+  reclaimRoom: boolean;
+  /** The `--credentials` value, or undefined for the repo's credentials.yaml. */
+  credentialsPath: string | undefined;
+}
+
+/**
+ * Parses the reclaim command line. A flag's value is consumed by its flag and
+ * never read as a runId -- the bug where `--credentials <path>` also selected
+ * `<path>` as a Run to reclaim (agora-eni.9). Unknown flags, a `--credentials`
+ * with no value, and runIds that could escape the logs directory all throw,
+ * because this command deletes things and should not guess.
+ */
+export function parseReclaimArgs(args: readonly string[]): ReclaimArgs {
+  const parsed: ReclaimArgs = {
+    runIds: [],
+    reclaimLogs: false,
+    reclaimRoom: false,
+    credentialsPath: undefined,
+  };
+  let selectAll = false;
+  const runIds: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    switch (arg) {
+      case "--logs":
+        parsed.reclaimLogs = true;
+        break;
+      case "--room":
+        parsed.reclaimRoom = true;
+        break;
+      case "--all-eligible":
+        selectAll = true;
+        break;
+      case "--credentials": {
+        const value = args[i + 1];
+        if (value === undefined || value.startsWith("--")) {
+          throw new Error("--credentials needs a path to a credentials.yaml.");
+        }
+        parsed.credentialsPath = value;
+        i++;
+        break;
+      }
+      default:
+        if (arg.startsWith("--")) throw new Error(`Unknown flag ${arg}.`);
+        assertSafeRunId(arg);
+        runIds.push(arg);
+    }
+  }
+  parsed.runIds = selectAll ? "all" : runIds;
+  return parsed;
+}
+
+/**
  * Applies an explicit reclamation to one Run. Never deletes anything the Run
  * did not record ending: an `incomplete` transcript is refused outright, before
  * any file or homeserver is touched.
@@ -150,6 +224,7 @@ export async function reclaimRun(params: {
   targets: ReclaimTargets;
 }): Promise<ReclaimResult> {
   const { logDir, hostBaseUrl, adminAccessToken, runId, targets } = params;
+  assertSafeRunId(runId);
   if (targets.reclaimRoom && !adminAccessToken) {
     throw new Error(MISSING_ADMIN_MESSAGE);
   }
@@ -209,15 +284,17 @@ function printUsage(): void {
 }
 
 export async function main(args: string[]): Promise<void> {
-  const credFlagIndex = args.indexOf("--credentials");
-  const credentialsPath =
-    credFlagIndex !== -1 && args[credFlagIndex + 1]
-      ? args[credFlagIndex + 1]!
-      : path.join(REPO_ROOT, "credentials.yaml");
-
-  const selectAll = args.includes("--all-eligible");
-  const reclaimLogs = args.includes("--logs");
-  const reclaimRoom = args.includes("--room");
+  let parsedArgs: ReclaimArgs;
+  try {
+    parsedArgs = parseReclaimArgs(args);
+  } catch (err) {
+    printUsage();
+    log.error((err as Error).message);
+    process.exitCode = 1;
+    return;
+  }
+  const { reclaimLogs, reclaimRoom } = parsedArgs;
+  const credentialsPath = parsedArgs.credentialsPath ?? path.join(REPO_ROOT, "credentials.yaml");
 
   // Does nothing by default: with no target named, there is nothing to do.
   if (!reclaimLogs && !reclaimRoom) {
@@ -227,9 +304,8 @@ export async function main(args: string[]): Promise<void> {
     return;
   }
 
-  const runIds: string[] = selectAll
-    ? await listRunIds(LOG_DIR)
-    : args.filter((arg) => !arg.startsWith("--"));
+  const runIds: string[] =
+    parsedArgs.runIds === "all" ? await listRunIds(LOG_DIR) : parsedArgs.runIds;
 
   if (runIds.length === 0) {
     log.error("Nothing to reclaim: no runIds selected.");

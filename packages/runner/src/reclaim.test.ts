@@ -7,6 +7,7 @@ import { parseRunId } from "@agora/shared";
 import {
   isEligibleForReclamation,
   listRunIds,
+  parseReclaimArgs,
   readRunTranscript,
   reclaimRun,
 } from "./reclaim.js";
@@ -382,5 +383,67 @@ describe("reclaimRun", () => {
     expect(await listRunIds(logDir)).toEqual([]);
     // The room is neither looked up nor deleted when it was not asked for.
     expect(requests).toEqual([]);
+  });
+});
+
+describe("parseReclaimArgs", () => {
+  // The CLI's arguments decide what gets deleted, so a value that belongs to a
+  // flag must never be read as a runId (agora-eni.9).
+  test("never treats the --credentials value as a runId", () => {
+    expect(
+      parseReclaimArgs(["run-20261008-0001", "--room", "--credentials", "/tmp/c.yaml", "--logs"]),
+    ).toEqual({
+      runIds: ["run-20261008-0001"],
+      reclaimLogs: true,
+      reclaimRoom: true,
+      credentialsPath: "/tmp/c.yaml",
+    });
+  });
+
+  test("selects every Run with --all-eligible and no credentials override", () => {
+    expect(parseReclaimArgs(["--all-eligible", "--logs"])).toEqual({
+      runIds: "all",
+      reclaimLogs: true,
+      reclaimRoom: false,
+      credentialsPath: undefined,
+    });
+  });
+
+  test("rejects --credentials without a value, and unknown flags", () => {
+    expect(() => parseReclaimArgs(["run-20261008-0001", "--logs", "--credentials"])).toThrow(/--credentials/);
+    expect(() => parseReclaimArgs(["run-20261008-0001", "--logs", "--credentials", "--room"])).toThrow(/--credentials/);
+    expect(() => parseReclaimArgs(["run-20261008-0001", "--log"])).toThrow(/--log/);
+  });
+
+  test("refuses a runId that could resolve outside the logs directory", () => {
+    for (const bad of ["../escape-20261008-0001", "a/b", "/abs/path", "..", ".", "a\\b", ""]) {
+      expect(() => parseReclaimArgs([bad, "--logs"])).toThrow(/runId/);
+    }
+  });
+});
+
+describe("reclaimRun refuses unsafe runIds", () => {
+  // Defence in depth: reclaimRun is exported, so it must not trust its caller
+  // to have validated the runId before joining it onto logDir and removing it.
+  test("throws before touching disk for a runId with a path separator or dot segment", async () => {
+    const logDir = await makeLogDir();
+    const outside = path.join(logDir, "..", path.basename(logDir) + "-sibling");
+    await writeTranscript(path.dirname(outside), path.basename(outside), [
+      eventHere("started"),
+      eventHere("completed"),
+    ]);
+    try {
+      await expect(
+        reclaimRun({
+          logDir,
+          hostBaseUrl: "https://homeserver",
+          runId: `../${path.basename(outside)}`,
+          targets: { reclaimLogs: true, reclaimRoom: false },
+        }),
+      ).rejects.toThrow(/runId/);
+      expect(await listRunIds(path.dirname(outside))).toContain(path.basename(outside));
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
