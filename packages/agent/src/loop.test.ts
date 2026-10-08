@@ -120,7 +120,7 @@ function makeRuntime(overrides: Record<string, unknown> = {}) {
     topic: "Should the speed limit change?",
     roomId: "!room:localhost",
     matrixUserId: "@alice:localhost",
-    maxToolStepsPerTick: 10,
+    maxToolStepsPerTurn: 10,
     logDir: "/tmp/agora-loop-test",
     mcp: mcp as never,
     llm: { baseUrl: "http://test/v1", apiKey: "k", model: "m" },
@@ -394,7 +394,7 @@ describe("buildSystemPrompt speaking contract", () => {
     expect(prompt).toContain("unless something has since given it new meaning");
   });
 
-  test("makes clear a tick with nothing to add is a valid outcome, not a failure", () => {
+  test("makes clear a turn with nothing to add is a valid outcome, not a failure", () => {
     const prompt = promptFor();
     expect(prompt).toContain("silence is a valid choice if you have nothing to add");
     expect(prompt).toContain("Having nothing to add is never a failure");
@@ -600,7 +600,7 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
       persona: stancedAgent.persona,
       topic: "Should the speed limit change?",
       currentStance: runtime.getStance(),
-      isFirstTick: false,
+      isFirstTurn: false,
       ownMessageHistory: [],
     });
     expect(prompt).toContain("private stance on the topic is 0.8");

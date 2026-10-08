@@ -165,7 +165,7 @@ describe("matrixActions identity marking", () => {
   });
 });
 
-describe("stance continuity across ticks", () => {
+describe("stance continuity across turns", () => {
   test("prompt reflects current stance, not just initial stance", async () => {
     const { buildSystemPrompt } = await import("../../agent/src/persona.js");
 
@@ -176,12 +176,12 @@ describe("stance continuity across ticks", () => {
       initialStance: 0.2,
     };
 
-    // On the agent's first turn (isFirstTick) with no current stance, the
+    // On the agent's first turn (isFirstTurn) with no current stance, the
     // prompt shows the initial stance.
     const prompt1 = buildSystemPrompt({
       persona: mockPersona,
       topic: "test",
-      isFirstTick: true,
+      isFirstTurn: true,
     });
     expect(prompt1).toContain("Your current private stance on the topic is 0.2");
     expect(prompt1).toContain("(you started at 0.2)");
@@ -191,13 +191,13 @@ describe("stance continuity across ticks", () => {
       persona: mockPersona,
       topic: "test",
       currentStance: 0.6,
-      isFirstTick: false,
+      isFirstTurn: false,
     });
     expect(prompt2).toContain("Your current private stance on the topic is 0.6");
     expect(prompt2).not.toContain("(you started at");
   });
 
-  test("stance can drift across ticks without resetting to initial", async () => {
+  test("stance can drift across turns without resetting to initial", async () => {
     // The contract: AgentRuntime (loop.ts) keeps the agent's current stance and
     // feeds it back into buildSystemPrompt each turn, so it drifts and is not
     // reset.
@@ -218,7 +218,7 @@ describe("stance continuity across ticks", () => {
         persona: mockPersona,
         topic: "test",
         currentStance: stance,
-        isFirstTick: false,
+        isFirstTurn: false,
       });
 
       // Each turn reflects the current stance, not a reset to the initial one.

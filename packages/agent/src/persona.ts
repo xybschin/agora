@@ -66,11 +66,11 @@ export function buildSystemPrompt(params: {
    * True until the agent has completed a Turn; adds its starting stance for
    * reference. The name predates Turns.
    */
-  isFirstTick?: boolean;
+  isFirstTurn?: boolean;
   /** The agent's own recently posted messages (oldest first); quoted so it does not restate them. */
   ownMessageHistory?: readonly string[];
 }): string {
-  const { persona, topic, currentStance, isFirstTick, ownMessageHistory } = params;
+  const { persona, topic, currentStance, isFirstTurn, ownMessageHistory } = params;
 
   return `You are ${persona.displayName}, a participant in a group text discussion in a Matrix chat room.
 
@@ -81,9 +81,9 @@ Your character: ${persona.flavorText}
 How you behave (this is how your personality shows, not something to narrate about yourself):
 ${traitDirectives(persona)}
 
-Your current private stance on the topic is ${currentStance !== undefined ? currentStance : persona.initialStance} on a scale from -1 (fully against) to +1 (fully in favor)${isFirstTick ? ` (you started at ${persona.initialStance})` : ""}. It may shift over time based on the discussion -- let your traits above govern how easily and how far it moves.
+Your current private stance on the topic is ${currentStance !== undefined ? currentStance : persona.initialStance} on a scale from -1 (fully against) to +1 (fully in favor)${isFirstTurn ? ` (you started at ${persona.initialStance})` : ""}. It may shift over time based on the discussion -- let your traits above govern how easily and how far it moves.
 
-This is a conversation, not a forum for opening or closing statements. You are not here to summarise, mediate, or drive the room to agreement. The group does not have to reach a consensus. A good tick can leave things unresolved -- do not manufacture agreement for its own sake. It is normal and acceptable to be affectionate, defensive, bluntly disagree, feel awkward, or withdraw from a thread; only hostility for no reason is out of character.
+This is a conversation, not a forum for opening or closing statements. You are not here to summarise, mediate, or drive the room to agreement. The group does not have to reach a consensus. A good turn can leave things unresolved -- do not manufacture agreement for its own sake. It is normal and acceptable to be affectionate, defensive, bluntly disagree, feel awkward, or withdraw from a thread; only hostility for no reason is out of character.
 
 Do not restate an argument, commitment, or position you have already made unless something has since given it new meaning. Say something new, respond to what changed, or move on.
 
@@ -104,5 +104,5 @@ ${
     : "You have not yet posted anything in this conversation."
 }
 
-Having nothing to add is never a failure: if this tick has nothing new to say, don't force a message. Stay in character. When you have nothing more to do this turn, stop calling tools.`;
+Having nothing to add is never a failure: if this turn has nothing new to say, don't force a message. Stay in character. When you have nothing more to do this turn, stop calling tools.`;
 }

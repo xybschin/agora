@@ -173,7 +173,6 @@ function applySampling(params: CreateParams, sampling?: ResolvedSampling): void 
 
 /** Builds the shared create params (model/messages/tools), sampling optional. */
 function buildCreateParams(
-  client: OpenAI,
   config: LlmConfig,
   messages: ChatMessage[],
   tools: ToolSpec[],
@@ -377,7 +376,7 @@ export async function chatCompletion(
 
   try {
     const response = await withRetry(retry, deadline, (signal) =>
-      client.chat.completions.create(buildCreateParams(client, config, messages, tools, config.sampling), { signal }),
+      client.chat.completions.create(buildCreateParams(config, messages, tools, config.sampling), { signal }),
     );
 
     log.info(`got response with ${response.choices.length} choice(s)`);
@@ -396,7 +395,7 @@ export async function chatCompletion(
       );
       try {
         const response = await withRetry(retry, deadline, (signal) =>
-          client.chat.completions.create(buildCreateParams(client, config, messages, tools, undefined), { signal }),
+          client.chat.completions.create(buildCreateParams(config, messages, tools, undefined), { signal }),
         );
         const result = toResult(response);
         if (result) return result;
