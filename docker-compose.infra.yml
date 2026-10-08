@@ -23,7 +23,13 @@ services:
       - SYNAPSE_REPORT_STATS=no
       - UID=991
       - GID=991
+      # Config is tracked in git and mounted read-only from a host-owned
+      # directory; /data is Synapse's own state (signing key, media, secrets,
+      # logs), which it chowns to uid 991 -- so git never has to write there
+      # (agora-eni.12).
+      - SYNAPSE_CONFIG_PATH=/config/homeserver.yaml
     volumes:
+      - ./docker/matrix/synapse-config:/config:ro
       - ./docker/matrix/synapse:/data
 
   postgres:

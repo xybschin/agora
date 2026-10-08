@@ -21,10 +21,9 @@ settings.local.json
 .bun/
 .beads/
 
-# Synapse-generated secrets
+# Synapse's runtime state: signing key, media, secrets, logs. Owned by uid 991
+# once Synapse boots; its tracked config lives in docker/matrix/synapse-config/.
 docker/matrix/synapse/*
-!/docker/matrix/synapse/homeserver.yaml
-!/docker/matrix/synapse/log.yaml
 
 # Postgres data volume. The infra compose mounts it under docker/matrix/, so
 # that is the path that has to match -- the bare docker/postgres-data line

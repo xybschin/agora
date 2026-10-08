@@ -54,8 +54,9 @@ homeserver URL, so the MCP server is their only way into Matrix (see
 1. `bun install` at the repo root.
 2. `bun run setup:secrets` -- generates Synapse's secrets
    (`registration_shared_secret`, `macaroon_secret_key`, `form_secret`) as
-   gitignored files under `docker/matrix/synapse/`, which `homeserver.yaml`
-   reads by path. It keeps any that already exist; to rotate one, run
+   gitignored files under `docker/matrix/synapse/` (Synapse's runtime state),
+   which the tracked `docker/matrix/synapse-config/homeserver.yaml` reads by
+   path. It keeps any that already exist; to rotate one, run
    `bun run setup:secrets -- --rotate <name>` and restart Synapse.
 3. `docker compose -f docker-compose.infra.yml up -d` -- brings up the
    self-hosted Matrix stack (Synapse + PostgreSQL + Element Web) with Element

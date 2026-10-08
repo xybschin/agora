@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 # Generates the dev Synapse's secrets as files under docker/matrix/synapse/,
-# which homeserver.yaml reads through its *_path options. That directory is
-# gitignored apart from the two config files, so the values never reach the
+# which homeserver.yaml (in docker/matrix/synapse-config/) reads through its
+# *_path options. That directory is gitignored, so the values never reach the
 # repository (agora-eni.11).
 #
 # The files are written from inside the Synapse image: Synapse takes ownership
