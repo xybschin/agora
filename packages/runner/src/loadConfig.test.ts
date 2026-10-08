@@ -49,7 +49,7 @@ describe("credentials.example.yaml", () => {
     // exactly where nobody ever runs it.
     const credentials = await loadCredentials(EXAMPLE_PATH);
     expect(credentials.matrixSetupUserId).toBe("@agora-setup:localhost");
-    expect(credentials.matrix.hostBaseUrl).toBe("http://localhost:8000");
+    expect(credentials.matrix.hostBaseUrl).toBe("http://localhost:8008");
     expect(credentials.agents["alex"]?.matrixUserId).toBe("@alex:localhost");
   });
 
