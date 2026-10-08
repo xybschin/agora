@@ -3,8 +3,8 @@ import yaml from "js-yaml";
 import type { CredentialsFile, ScenarioConfig } from "@agora/shared";
 import { generateComposeFile } from "./composeGenerator.js";
 
-// Pins the environment each generated service receives: the Run's room id and
-// container-facing homeserver URL, sampling and seed handed only where they
+// Pins the environment each generated service receives: the Run's room id, the
+// MCP server's container-facing homeserver URL (agents get none), sampling and seed handed only where they
 // belong, the Moderator's topic and roster, and compose-safe escaping of every
 // value. The room id is a per-Run value, so it arrives on the params rather than
 // being read off the credentials file.
@@ -75,7 +75,7 @@ describe("generateComposeFile", () => {
     expect(yamlText).not.toContain("!run0:");
   });
 
-  test("still points containers at the container-facing homeserver URL", () => {
+  test("still points the MCP server at the container-facing homeserver URL", () => {
     const { yamlText } = generateComposeFile({
       runId: "remote-work-policy-1759000000000",
       roomId: "!run1:localhost",
@@ -85,15 +85,39 @@ describe("generateComposeFile", () => {
 
     // The host-side runner and the containers reach Synapse on different URLs.
     const services = (yaml.load(yamlText) as {
-      services: Record<string, { environment: Record<string, string> }>;
+      services: Record<string, { environment: Record<string, string>; networks: string[] }>;
     }).services;
-    expect(services["agent_alex"]?.environment["MATRIX_HOME_SERVER_URL"]).toBe(
-      "http://synapse:8008",
-    );
     expect(services["mcp_server"]?.environment["MATRIX_HOME_SERVER_URL"]).toBe(
       "http://synapse:8008",
     );
+    expect(services["mcp_server"]?.networks).toContain("agora_infra");
     expect(yamlText).not.toContain("http://localhost:8008");
+  });
+
+  test("gives agents no route to the homeserver: no URL and no infra network", () => {
+    // Agents reach Matrix only through the MCP server, which binds identity to
+    // the token and has no member-list tool -- Reader invisibility (ADR-0003)
+    // rests on that. Withholding the homeserver URL and the agora_infra network
+    // makes the isolation structural instead of a convention agent code keeps.
+    const { yamlText } = generateComposeFile({
+      runId: "remote-work-policy-1759000000000",
+      roomId: "!run1:localhost",
+      scenario,
+      credentials,
+    });
+
+    const services = (yaml.load(yamlText) as {
+      services: Record<string, { environment: Record<string, string>; networks: string[] }>;
+    }).services;
+    for (const agentId of ["alex", "bri"]) {
+      const svc = services[`agent_${agentId}`]!;
+      expect(svc.environment).not.toHaveProperty("MATRIX_HOME_SERVER_URL");
+      expect(Object.values(svc.environment)).not.toContain("http://synapse:8008");
+      // Only its own isolation network, which it shares with mcp_server alone.
+      expect(svc.networks).toEqual([`net_${agentId}`]);
+      expect(services["mcp_server"]?.networks).toContain(`net_${agentId}`);
+      expect(svc.environment["MCP_URL"]).toBe("http://mcp_server:3000/mcp");
+    }
   });
 
   test("tells the shared MCP server which room this Run is in", () => {

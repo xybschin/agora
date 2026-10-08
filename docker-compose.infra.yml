@@ -2,8 +2,9 @@
 # homeserver, :8008), its PostgreSQL database, and Element Web (:8009) for
 # Readers to watch a Run's room. Start it once with `bun run setup:matrix`;
 # Runs come and go on top of it. The `agora_infra` network has a fixed name
-# because each Run's generated compose file joins its agent, mcp_server and
-# Moderator containers to it to reach Synapse by container DNS.
+# because each Run's generated compose file joins its mcp_server and
+# Moderator containers to it to reach Synapse by container DNS. Agent
+# containers are deliberately kept off it: they reach Matrix only via MCP.
 services:
   synapse:
     image: matrixdotorg/synapse:latest
