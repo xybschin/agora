@@ -14,7 +14,7 @@ import {
 /**
  * Reclamation is explicit and gated on a terminal verdict (ADR-0006). These
  * tests pin the derive-then-act rule: a transcript with no terminal event
- * (`run_completed` or `run_aborted`) is `incomplete` — the ambiguous hard-crash
+ * (`moderator_ended_run`, `run_completed` or `run_aborted`) is `incomplete` — the ambiguous hard-crash
  * signature — and is never eligible, on disk or in the room. They run entirely
  * off temporary log directories (no metadata store) and against a stubbed
  * homeserver, so no live homeserver is needed.
@@ -32,12 +32,22 @@ afterEach(async () => {
   tempDir = "";
 });
 
-function eventHere(kind: "started" | "completed" | "aborted" | "message"): AgoraEvent {
+function eventHere(
+  kind: "started" | "completed" | "moderatorEnded" | "aborted" | "message",
+): AgoraEvent {
   switch (kind) {
     case "started":
       return { type: "run_started", runId: "r", timestamp: "t" };
     case "completed":
       return { type: "run_completed", runId: "r", timestamp: "t" };
+    case "moderatorEnded":
+      return {
+        type: "moderator_ended_run",
+        runId: "r",
+        rationale: "stale",
+        messageId: "$end",
+        timestamp: "t",
+      };
     case "aborted":
       return { type: "run_aborted", runId: "r", reason: "cancelled", timestamp: "t" };
     case "message":
@@ -80,6 +90,13 @@ describe("isEligibleForReclamation (incomplete-is-never-eligible)", () => {
   test("a run_completed transcript is eligible", () => {
     expect(
       isEligibleForReclamation([eventHere("started"), eventHere("completed")]),
+    ).toBe(true);
+  });
+
+  test("a Moderator-ended transcript is eligible", () => {
+    // moderator_ended_run is the normal way a Run completes now.
+    expect(
+      isEligibleForReclamation([eventHere("started"), eventHere("message"), eventHere("moderatorEnded")]),
     ).toBe(true);
   });
 

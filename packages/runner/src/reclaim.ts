@@ -17,8 +17,8 @@
  *   it does nothing unless an operator names a run and a target (--logs and/or
  *   --room). Nothing is auto-expired; there is no retention window.
  * - It is gated on the Run's verdict being terminal. A Run whose transcript
- *   carries no terminal event (`run_completed` or `run_aborted`) is
- *   `incomplete` — under ADR-0005 that is exactly the ambiguous hard-crash
+ *   carries no terminal event (`moderator_ended_run`, `run_completed` or
+ *   `run_aborted`) is `incomplete` — under ADR-0005 that is exactly the ambiguous hard-crash
  *   signature — and is never eligible for reclamation. Only a Run that recorded
  *   how it ended may be reclaimed.
  *
@@ -54,8 +54,9 @@ const LOG_DIR = path.join(REPO_ROOT, "logs");
 /**
  * Whether a Run's transcript records a verdict terminal enough to reclaim.
  *
- * Eligibility is gated on the presence of a terminal event (`run_completed` or
- * `run_aborted`), not on `deriveRunStatus`'s verdict. The two agree for every
+ * Eligibility is gated on the presence of a terminal event
+ * (`moderator_ended_run`, the normal ending; `run_completed`, which only older
+ * transcripts carry; or `run_aborted`), not on `deriveRunStatus`'s verdict. The two agree for every
  * modern transcript — `deriveRunStatus` only reports `completed`/`aborted`
  * when a terminal event is present — but the fallback it carries for transcripts
  * written before `run_started` existed can *guess* completion from the tick
@@ -65,7 +66,10 @@ const LOG_DIR = path.join(REPO_ROOT, "logs");
  */
 export function isEligibleForReclamation(events: readonly AgoraEvent[]): boolean {
   return events.some(
-    (event) => event.type === "run_completed" || event.type === "run_aborted",
+    (event) =>
+      event.type === "moderator_ended_run" ||
+      event.type === "run_completed" ||
+      event.type === "run_aborted",
   );
 }
 
