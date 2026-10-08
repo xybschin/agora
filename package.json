@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "typecheck": "bun run --filter '*' typecheck",
+    "setup:secrets": "sh scripts/generate-synapse-secrets.sh",
     "setup:matrix": "docker compose -f docker-compose.infra.yml up -d --force-recreate",
     "bootstrap:matrix": "bun run packages/runner/src/matrixBootstrap.ts",
     "run:scenario": "bun run packages/runner/src/index.ts",

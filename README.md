@@ -52,17 +52,24 @@ homeserver URL, so the MCP server is their only way into Matrix (see
 ## One-time setup (Matrix, recommended)
 
 1. `bun install` at the repo root.
-2. `docker compose -f docker-compose.infra.yml up -d` -- brings up the
+2. `bun run setup:secrets` -- generates Synapse's secrets
+   (`registration_shared_secret`, `macaroon_secret_key`, `form_secret`) as
+   gitignored files under `docker/matrix/synapse/`, which `homeserver.yaml`
+   reads by path. It keeps any that already exist; to rotate one, run
+   `bun run setup:secrets -- --rotate <name>` and restart Synapse.
+3. `docker compose -f docker-compose.infra.yml up -d` -- brings up the
    self-hosted Matrix stack (Synapse + PostgreSQL + Element Web) with Element
    Web reachable at `http://localhost:8009` and the Matrix client API at
-   `http://localhost:8008`. Backed by named volumes so data survives restarts.
-3. `bun run bootstrap:matrix scenarios/remote-work-policy.yaml` -- registers
-   one account per agent (+ a setup account) and writes the result to
-   `credentials.yaml`. It creates no room: every Run creates its own (see
-   "Running a scenario"), so there is nothing to re-provision between runs.
-4. Open `credentials.yaml` and fill in each agent's `llmApiKey` (the Matrix
-   side is already done by step 3). Also set the shared secrets in
-   `docker/matrix/homeserver.yaml` before first boot.
+   `http://localhost:8008`, on this machine only (every port binds to
+   127.0.0.1). Backed by named volumes so data survives restarts.
+4. `SYNAPSE_REGISTRATION_SHARED_SECRET_FILE=docker/matrix/synapse/registration_shared_secret bun run bootstrap:matrix scenarios/remote-work-policy.yaml`
+   -- registers one account per agent (+ a setup account, + a server admin
+   for reclaiming rooms) and writes the result to `credentials.yaml`. Leave
+   the variable out if you never reclaim rooms. It creates no room: every Run
+   creates its own (see "Running a scenario"), so there is nothing to
+   re-provision between runs.
+5. Open `credentials.yaml` and fill in each agent's `llmApiKey` (the Matrix
+   side is already done by step 4).
 
 ## One-time setup (hosted Matrix, alternative)
 
@@ -126,9 +133,8 @@ case. Without a target (`--room` and/or `--logs`) it does nothing. Use
 
 `--room` needs a server-admin credential, `matrixAdmin` in `credentials.yaml`
 (see ADR-0009): Synapse only deletes rooms through its admin API. Bootstrap
-creates one when run with `SYNAPSE_REGISTRATION_SHARED_SECRET` set to the
-homeserver's `registration_shared_secret`; otherwise add an admin account's
-token by hand. `--logs` works without it. The room is deleted first, and the
+creates one when given the homeserver's `registration_shared_secret` (setup
+step 4); otherwise add an admin account's token by hand. `--logs` works without it. The room is deleted first, and the
 logs only once Synapse reports the room purged, so a failed room deletion
 leaves the Run intact and reclaimable.
 

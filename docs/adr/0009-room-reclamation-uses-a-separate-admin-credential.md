@@ -66,5 +66,8 @@ the surviving room unreclaimable by the normal path.
 - A room reclaim waits on Synapse's asynchronous delete status, so it can take
   noticeably longer than a logs-only reclaim.
 - Anyone holding the homeserver's `registration_shared_secret` can mint a
-  server admin. The dev stack's `homeserver.yaml` ships a placeholder string,
-  which works but is public; replace it on any homeserver others can reach.
+  server admin. On the dev stack it is therefore generated per checkout into a
+  gitignored file that `homeserver.yaml` reads by path (along with
+  `macaroon_secret_key` and `form_secret`, which had the same public
+  placeholder problem), bootstrap reads it from that file, and every infra
+  port binds to 127.0.0.1 (`agora-eni.11`).

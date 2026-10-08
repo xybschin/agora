@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadCredentials, loadLocalReaders } from "./loadConfig.js";
+import { loadCredentials, loadLocalReaders, readRegistrationSharedSecret } from "./loadConfig.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXAMPLE_PATH = path.resolve(__dirname, "../../../credentials.example.yaml");
@@ -124,5 +124,45 @@ describe("loadLocalReaders", () => {
     const filename = join(dir, "readers.local.yaml");
     writeFileSync(filename, "observers: [\"@human:localhost\"]\n", "utf8");
     expect(() => loadLocalReaders(filename)).toThrow(/should be a list of Matrix user ids/);
+  });
+});
+
+// Bootstrap mints the server admin from Synapse's registration_shared_secret
+// (ADR-0009). The dev stack keeps that secret in a gitignored file, so the file
+// form is the normal one; the variable form stays for hosted homeservers.
+describe("readRegistrationSharedSecret", () => {
+  test("is undefined when neither variable is set, so no admin is minted", async () => {
+    expect(await readRegistrationSharedSecret({})).toBeUndefined();
+  });
+
+  test("takes the secret from SYNAPSE_REGISTRATION_SHARED_SECRET", async () => {
+    expect(await readRegistrationSharedSecret({ SYNAPSE_REGISTRATION_SHARED_SECRET: "s3cret" })).toBe("s3cret");
+  });
+
+  test("reads the file SYNAPSE_REGISTRATION_SHARED_SECRET_FILE names, trimming a trailing newline", async () => {
+    const file = join(freshDir(), "registration_shared_secret");
+    writeFileSync(file, "abc123\n");
+    expect(await readRegistrationSharedSecret({ SYNAPSE_REGISTRATION_SHARED_SECRET_FILE: file })).toBe("abc123");
+  });
+
+  test("fails on a named file that is missing or empty rather than silently minting nothing", async () => {
+    const dir = freshDir();
+    await expect(
+      readRegistrationSharedSecret({ SYNAPSE_REGISTRATION_SHARED_SECRET_FILE: join(dir, "nope") }),
+    ).rejects.toThrow();
+    const empty = join(dir, "empty");
+    writeFileSync(empty, "\n");
+    await expect(
+      readRegistrationSharedSecret({ SYNAPSE_REGISTRATION_SHARED_SECRET_FILE: empty }),
+    ).rejects.toThrow(/empty/);
+  });
+
+  test("refuses both variables at once instead of guessing which one wins", async () => {
+    await expect(
+      readRegistrationSharedSecret({
+        SYNAPSE_REGISTRATION_SHARED_SECRET: "a",
+        SYNAPSE_REGISTRATION_SHARED_SECRET_FILE: "/x",
+      }),
+    ).rejects.toThrow(/both/);
   });
 });

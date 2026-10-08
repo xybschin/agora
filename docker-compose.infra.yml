@@ -5,13 +5,16 @@
 # because each Run's generated compose file joins its mcp_server and
 # Moderator containers to it to reach Synapse by container DNS. Agent
 # containers are deliberately kept off it: they reach Matrix only via MCP.
+# Every port publishes on 127.0.0.1 only: nothing outside this machine needs
+# them (Run containers use the network), and Synapse's admin registration
+# should not be reachable from the LAN.
 services:
   synapse:
     image: matrixdotorg/synapse:latest
     restart: unless-stopped
     networks: [agora_infra]
     ports:
-      - 8008:8008
+      - "127.0.0.1:8008:8008"
     depends_on:
       postgres:
         condition: service_healthy
@@ -28,7 +31,7 @@ services:
     restart: unless-stopped
     networks: [agora_infra]
     ports:
-      - 5432:5432
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_USER: synapse
       POSTGRES_PASSWORD: synapse
@@ -47,7 +50,7 @@ services:
     restart: unless-stopped
     networks: [agora_infra]
     ports:
-      - "0.0.0.0:8009:80"
+      - "127.0.0.1:8009:80"
     volumes:
       - ./docker/matrix/element-web/element-web-config.json:/app/config.json:ro
 

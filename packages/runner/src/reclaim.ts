@@ -186,7 +186,7 @@ export async function reclaimRun(params: {
 
 const MISSING_ADMIN_MESSAGE =
   "--room needs a server-admin credential (matrixAdmin in credentials.yaml; " +
-  "see ADR-0009). Re-run bootstrap with SYNAPSE_REGISTRATION_SHARED_SECRET set, " +
+  "see ADR-0009). Re-run bootstrap with SYNAPSE_REGISTRATION_SHARED_SECRET_FILE set, " +
   "or add an admin account's token by hand. --logs works without it.";
 
 function printUsage(): void {

@@ -20,8 +20,10 @@
  * If your homeserver requires registration tokens:
  *   Pass them with --registration-tokens tok1,tok2,...
  *
- * Server-admin account (ADR-0009): with SYNAPSE_REGISTRATION_SHARED_SECRET set
- * to the homeserver's `registration_shared_secret`, it also registers a server
+ * Server-admin account (ADR-0009): given the homeserver's
+ * `registration_shared_secret` -- via SYNAPSE_REGISTRATION_SHARED_SECRET_FILE
+ * (the dev stack's gitignored secret file) or SYNAPSE_REGISTRATION_SHARED_SECRET
+ * -- it also registers a server
  * admin through Synapse's shared-secret registration and writes it as
  * `matrixAdmin`, the credential `reclaim --room` deletes rooms with. The secret
  * is read from the environment rather than a flag so it stays out of shell
@@ -40,7 +42,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import type { AgentCredential, CredentialsFile } from "@agora/shared";
-import { loadScenario } from "./loadConfig.js";
+import { loadScenario, readRegistrationSharedSecret } from "./loadConfig.js";
 import { clientPath, csRequest, registerAdminAccount } from "./matrixRooms.js";
 import { createLogger } from "@agora/shared";
 
@@ -177,7 +179,7 @@ async function main(): Promise<void> {
   // existing admin is reused, not replaced, so re-running bootstrap does not
   // leave a trail of unrevoked server-admin tokens; delete `matrixAdmin` from
   // the file to mint a fresh one.
-  const sharedSecret = process.env.SYNAPSE_REGISTRATION_SHARED_SECRET;
+  const sharedSecret = await readRegistrationSharedSecret(process.env);
   let matrixAdmin = existing?.matrixAdmin;
   if (sharedSecret && !matrixAdmin) {
     log.info("Registering server-admin account (for reclaim --room)...");
