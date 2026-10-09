@@ -1,5 +1,6 @@
 // Pins matrixActions' contracts against a recorded fetch: readRoom marks only
-// the token owner's messages as its own and resolves display names,
+// the token owner's messages as its own, resolves display names and shows
+// Replies with their fallback quote swapped for a short replyTo,
 // waitForActivity long-polls /sync without ever sending the room id,
 // sendMessage quotes the original in a rich reply (or degrades to a bare
 // reply), and stripQuote drops agent-written quotes. Two suites also check the agent's system prompt
@@ -336,6 +337,113 @@ describe("identity is resolved from the access token, not a client header (agora
 
     const self = messages.find((m) => m.sender === "@agora-alex:localhost")!;
     expect(self.senderDisplayName).toBe("@agora-alex:localhost");
+  });
+});
+
+describe("readRoom shows Replies compactly (agora-jb3.3)", () => {
+  /** Reads a room holding `events` as @agora-alex, with Carol named in the member list. */
+  async function readEvents(events: unknown[]) {
+    process.env.MATRIX_HOME_SERVER_URL = "http://synapse:8008";
+    const { getMatrixClient } = await import("./matrixPool.js");
+    const { readRoom } = await import("./matrixActions.js");
+    const base = matrixResponder("@agora-alex:localhost");
+    const calls = recordFetch((call) =>
+      call.url.includes("/messages")
+        ? new Response(JSON.stringify({ chunk: [...events].reverse() }), { status: 200 })
+        : base(call),
+    );
+    const messages = await readRoom(getMatrixClient("syt_alex"), "!room:localhost", 10);
+    return { messages, calls };
+  }
+
+  function reply(eventId: string, sender: string, body: string, target = "$orig") {
+    return {
+      event_id: eventId,
+      sender,
+      type: "m.room.message",
+      content: { msgtype: "m.text", body, "m.relates_to": { "m.in_reply_to": { event_id: target } } },
+      origin_server_ts: 1,
+    };
+  }
+
+  test("strips a multi-line fallback and names the original's sender", async () => {
+    // The shape replyFallback writes: sender on its own line, a blank original
+    // line quoted as "> ", then one blank line before the reply.
+    const body = "> <@carol:localhost>\n> First line.\n> \n> Third line.\n\nI disagree.";
+    const { messages, calls } = await readEvents([reply("$r", "@bob:localhost", body)]);
+
+    expect(messages[0]!.content).toBe("I disagree.");
+    expect(messages[0]!.replyTo).toEqual({
+      eventId: "$orig",
+      senderDisplayName: "Carol Danvers",
+      excerpt: "First line. Third line.",
+    });
+    // The excerpt comes from the quote itself, never from fetching the original.
+    expect(calls.some((c) => c.url.includes("/event/"))).toBe(false);
+  });
+
+  test("keeps a multi-line reply after the fallback intact", async () => {
+    const body = "> <@carol:localhost>\n> hi\n\nline one\n\nline two";
+    const { messages } = await readEvents([reply("$r", "@bob:localhost", body)]);
+    expect(messages[0]!.content).toBe("line one\n\nline two");
+  });
+
+  test("truncates a long original to an 80-character excerpt with an ellipsis", async () => {
+    const original = "word ".repeat(40).trim();
+    const body = `> <@carol:localhost>\n> ${original}\n\nok`;
+    const { messages } = await readEvents([reply("$r", "@bob:localhost", body)]);
+
+    const excerpt = messages[0]!.replyTo!.excerpt!;
+    expect(excerpt.length).toBeLessThanOrEqual(80);
+    expect(excerpt.endsWith("…")).toBe(true);
+    expect(original.startsWith(excerpt.slice(0, -1))).toBe(true);
+  });
+
+  test("reads the sender from a fallback that shares its line with the original", async () => {
+    // Other clients (e.g. Element) put the original's first line after the sender.
+    const body = "> <@dave:localhost> Opening line\n> second\n\nreply";
+    const { messages } = await readEvents([reply("$r", "@bob:localhost", body)]);
+
+    expect(messages[0]!.content).toBe("reply");
+    // Dave is not in the member list, so the raw user id stands in.
+    expect(messages[0]!.replyTo).toEqual({
+      eventId: "$orig",
+      senderDisplayName: "@dave:localhost",
+      excerpt: "Opening line second",
+    });
+  });
+
+  test("a Reply without a fallback keeps its body and carries only the target id", async () => {
+    const { messages } = await readEvents([reply("$r", "@bob:localhost", "> not a fallback\n\nbody")]);
+    expect(messages[0]!.content).toBe("> not a fallback\n\nbody");
+    expect(messages[0]!.replyTo).toEqual({ eventId: "$orig" });
+  });
+
+  test("a non-reply is passed through unchanged, with no replyTo", async () => {
+    const quoteLike = "> <@carol:localhost>\n> looks like a quote\n\nbut is not a Reply";
+    const { messages } = await readEvents([
+      {
+        event_id: "$plain",
+        sender: "@bob:localhost",
+        type: "m.room.message",
+        content: { msgtype: "m.text", body: quoteLike },
+        origin_server_ts: 1,
+      },
+    ]);
+    expect(messages[0]!.content).toBe(quoteLike);
+    expect("replyTo" in messages[0]!).toBe(false);
+  });
+
+  test("the caller's own Reply is stripped and still marked as its own", async () => {
+    const body = "> <@carol:localhost>\n> hi from carol\n\nhi back";
+    const { messages } = await readEvents([reply("$r", "@agora-alex:localhost", body)]);
+
+    expect(messages[0]!.content).toBe("**your message:** hi back");
+    expect(messages[0]!.replyTo).toEqual({
+      eventId: "$orig",
+      senderDisplayName: "Carol Danvers",
+      excerpt: "hi from carol",
+    });
   });
 });
 
