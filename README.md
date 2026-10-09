@@ -36,7 +36,7 @@ chat together in a Matrix room, to see whether human-group phenomena
   instead of a hosted chat service so "bots" are just accounts on your own
   instance -- no developer portal, no rate limits, no ToS risk. The previous
   Discord/Spacebar backend was replaced by this stack (see
-  `docs/matrix-db-decision.md` and `docs/matrix-proxy-decision.md`).
+  `docs/matrix-db-decision.md`).
 
 ### Isolation model
 
