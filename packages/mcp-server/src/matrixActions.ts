@@ -24,12 +24,35 @@ export interface RoomMessage {
   sender: string;
   /** Display name if we can cheaply resolve it; otherwise the raw user ID. */
   senderDisplayName: string;
-  /** The message body (m.text / m.notice / fallback for other types). May be prefixed with "**your message:**" if sent by the caller. */
+  /**
+   * The message body (m.text / m.notice / fallback for other types). May be
+   * prefixed with "**your message:**" if sent by the caller. A Reply's
+   * rich-reply fallback quote is stripped; `replyTo` describes its target.
+   */
   content: string;
-  replyToEventId?: string;
+  /** Set when the message is a Reply (carries an m.in_reply_to relation). */
+  replyTo?: ReplyTarget;
   /** ISO timestamp, from origin_server_ts (epoch millis). */
   createdAt: string;
 }
+
+/** The message a Reply answers, as far as the Reply itself tells us. */
+export interface ReplyTarget {
+  eventId: string;
+  /**
+   * The target's sender, named like `senderDisplayName`. Omitted only when the
+   * Reply carries no fallback quote to read the sender from.
+   */
+  senderDisplayName?: string;
+  /**
+   * The start of the target's text, cut from the Reply's fallback quote and
+   * truncated to REPLY_EXCERPT_MAX_CHARS. Omitted when there is no fallback.
+   */
+  excerpt?: string;
+}
+
+/** Longest replyTo.excerpt, in characters, including the trailing ellipsis. */
+const REPLY_EXCERPT_MAX_CHARS = 80;
 
 interface RawEvent {
   event_id: string;
@@ -103,7 +126,8 @@ export async function resolveOwnUserId(client: MatrixClient): Promise<string> {
  *
  * The caller's own events have their `content` prefixed with
  * "**your message:**", which the agent's system prompt (persona.ts) tells it
- * to look for. Makes three requests: /messages, /joined_members for display
+ * to look for. A Reply's fallback quote is replaced by `replyTo`, built from
+ * the quote itself (see parseReplyFallback). Makes three requests: /messages, /joined_members for display
  * names, and /account/whoami to learn who the caller is.
  */
 export async function readRoom(
@@ -157,9 +181,22 @@ export async function readRoom(
     .reverse(); // dir=b is newest-first; flip to oldest-first like the read tool promises.
 
   return messages.map((event) => {
-    const relatesTo = event.content?.["m.relates_to"];
+    const replyToEventId = event.content?.["m.relates_to"]?.["m.in_reply_to"]?.event_id;
     const isOwnMessage = ownMatrixUserId && event.sender === ownMatrixUserId;
     let content = summaryText(event);
+    let replyTo: ReplyTarget | undefined;
+    if (replyToEventId) {
+      // With most messages Replies, the full fallback quote would roughly
+      // double every read (ADR-0010), so it is swapped for a short excerpt.
+      // Only this read is compacted; the room keeps the quote for Readers.
+      replyTo = { eventId: replyToEventId };
+      const fallback = parseReplyFallback(content);
+      if (fallback) {
+        content = fallback.reply;
+        replyTo.senderDisplayName = memberMap[fallback.sender] ?? fallback.sender;
+        replyTo.excerpt = fallback.excerpt;
+      }
+    }
     if (isOwnMessage) {
       content = `**your message:** ${content}`;
     }
@@ -168,10 +205,42 @@ export async function readRoom(
       sender: event.sender,
       senderDisplayName: memberMap[event.sender] ?? event.sender,
       content,
-      replyToEventId: relatesTo?.["m.in_reply_to"]?.event_id,
+      ...(replyTo ? { replyTo } : {}),
       createdAt: new Date(event.origin_server_ts ?? Date.now()).toISOString(),
     };
   });
+}
+
+/**
+ * Splits a Reply's body into its rich-reply fallback quote and the reply
+ * itself. The fallback is the run of leading ">" lines, opening with the
+ * original sender in angle brackets: on a line of its own as replyFallback
+ * writes it ("> <@bob:hs>"), or ahead of the original's first line as other
+ * clients write it ("> <@bob:hs> first line"). The excerpt is the quoted
+ * original joined onto one line and cut to REPLY_EXCERPT_MAX_CHARS. A body
+ * that does not open that way has no fallback and yields undefined.
+ */
+export function parseReplyFallback(
+  body: string,
+): { sender: string; excerpt: string; reply: string } | undefined {
+  const lines = body.split("\n");
+  const header = /^> <(@[^>]+)>(?: (.*))?$/.exec(lines[0] ?? "");
+  if (!header) return undefined;
+
+  let end = 1;
+  while (end < lines.length && lines[end]!.startsWith(">")) end++;
+  // The fallback is separated from the reply by one blank line.
+  const rest = lines.slice(end);
+  if (rest[0] === "") rest.shift();
+
+  const quoted = [header[2] ?? "", ...lines.slice(1, end).map((line) => line.replace(/^> ?/, ""))];
+  const original = quoted.join(" ").replace(/\s+/g, " ").trim();
+  const excerpt =
+    original.length > REPLY_EXCERPT_MAX_CHARS
+      ? `${original.slice(0, REPLY_EXCERPT_MAX_CHARS - 1).trimEnd()}…`
+      : original;
+
+  return { sender: header[1]!, excerpt, reply: rest.join("\n") };
 }
 
 function summaryText(event: RawEvent): string {
