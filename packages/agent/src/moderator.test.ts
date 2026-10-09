@@ -20,14 +20,18 @@ let script: Array<ScriptedMessage | Error> = [];
 // The messages of every chatCompletion call, so a test can read the turn
 // message the Moderator was given.
 let llmCalls: ChatMessage[][] = [];
+// The tools offered on every chatCompletion call, so a test can check what the
+// Moderator's model is allowed to call.
+let llmTools: ToolSpec[][] = [];
 // What each chatCompletion call reports as its token usage; undefined stands in
 // for a provider that returns none.
 const DEFAULT_LLM_USAGE = { promptTokens: 5, completionTokens: 5 };
 let llmUsage: { promptTokens: number; completionTokens: number } | undefined = DEFAULT_LLM_USAGE;
 
 mock.module("./llm.js", () => ({
-  chatCompletion: async (_llm: unknown, messages: ChatMessage[]) => {
+  chatCompletion: async (_llm: unknown, messages: ChatMessage[], tools: ToolSpec[]) => {
     llmCalls.push([...messages]);
+    llmTools.push([...tools]);
     const next = script.shift();
     if (!next) throw new Error("test script exhausted: no more assistant messages");
     if (next instanceof Error) throw next;
@@ -64,15 +68,33 @@ function readRoomCall(): ToolCall {
   };
 }
 
+/** The Moderator's closing message: always a Room post (ADR-0010). */
 function sendCall(content: string): ToolCall {
   return {
     id: "call_send",
     type: "function",
     function: {
-      name: "matrix_send_message",
+      name: "matrix_post",
       arguments: JSON.stringify({ content }),
     },
   };
+}
+
+/** A matrix_reply, which the Moderator is never offered but a model may emit. */
+function replyCall(eventId: string, content: string): ToolCall {
+  return {
+    id: "call_reply",
+    type: "function",
+    function: {
+      name: "matrix_reply",
+      arguments: JSON.stringify({ eventId, content }),
+    },
+  };
+}
+
+/** A tool spec as MatrixMcpClient.listToolSpecs advertises one. */
+function toolSpec(name: string): ToolSpec {
+  return { type: "function", function: { name, description: name, parameters: { type: "object" } } };
 }
 
 function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
@@ -97,7 +119,7 @@ function createMcpStub(params?: {
       if (name === "matrix_read_room") {
         return params?.readRoomResult ?? JSON.stringify([]);
       }
-      if (name === "matrix_send_message") {
+      if (name === "matrix_post") {
         if (params?.sendMessageError) throw params.sendMessageError;
         return params?.sendMessageResult ?? JSON.stringify({ id: "event_1", createdAt: new Date().toISOString() });
       }
@@ -194,6 +216,74 @@ describe("ModeratorRuntime", () => {
         ["moderator_ended_run", "run_completed", "run_aborted"].includes(e.type),
       );
       expect(terminal).toHaveLength(0);
+    });
+  });
+
+  describe("Room posts only (ADR-0010)", () => {
+    // A judge that Replies to one agent would appear to address one party, so
+    // the Moderator only ever sends Room posts.
+    test("is offered matrix_post but never matrix_reply", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      llmTools = [];
+      script = [assistant([classifyCall("active", "New arguments keep arriving")]), assistant()];
+      const mcp = createMcpStub();
+      mcp.listToolSpecs = async () => [
+        toolSpec("matrix_read_room"),
+        toolSpec("matrix_reply"),
+        toolSpec("matrix_post"),
+        toolSpec("matrix_add_reaction"),
+      ];
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        topic: TOPIC,
+        roomId: ROOM_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+      });
+
+      await runtime.runTurn();
+
+      const names = llmTools[0]!.map((t) => t.function.name);
+      expect(names).toContain("matrix_post");
+      expect(names).not.toContain("matrix_reply");
+      expect(names).toContain("classify_discussion");
+    });
+
+    test("a matrix_reply the model emits anyway is refused, even after STALE, and never sent", async () => {
+      const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
+      script = [
+        assistant([classifyCall("stale", "Positions have frozen")]),
+        assistant([replyCall("$alice1", "Thanks Alice, let's wrap up")]),
+        assistant(),
+      ];
+      const sent: string[] = [];
+      const mcp = createMcpStub();
+      const originalCall = mcp.callTool;
+      mcp.callTool = async (name, args) => {
+        sent.push(name);
+        return originalCall(name, args);
+      };
+      const runtime = new ModeratorRuntime({
+        runId: RUN_ID,
+        topic: TOPIC,
+        roomId: ROOM_ID,
+        logDir,
+        mcp: mcp as never,
+        llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
+      });
+
+      const result = await runtime.runTurn();
+
+      expect(sent).not.toContain("matrix_reply");
+      expect(result.shouldEnd).toBe(false);
+      const events = (await readFile(path.join(logDir, RUN_ID, "events.jsonl"), "utf-8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(events.filter((e) => e.type === "message")).toHaveLength(0);
+      const refused = events.find((e) => e.type === "moderator_tool_call" && e.tool === "matrix_reply");
+      expect(refused?.resultSummary).toMatch(/matrix_post/);
     });
   });
 
@@ -342,7 +432,7 @@ describe("ModeratorRuntime", () => {
       const toolCalls = events.filter((e) => e.type === "moderator_tool_call");
 
       expect(toolCalls).toHaveLength(1);
-      expect(toolCalls[0].tool).toBe("matrix_send_message");
+      expect(toolCalls[0].tool).toBe("matrix_post");
       expect(toolCalls[0].args).toEqual({ content: "Too early" });
       expect(toolCalls[0].resultSummary).toMatch(/^ERROR: You can only post/);
       expect(toolCalls[0].resultSummary.length).toBeLessThanOrEqual(200);
@@ -584,7 +674,7 @@ describe("ModeratorRuntime", () => {
 
       const originalCall = mcp.callTool;
       mcp.callTool = async (name, args) => {
-        if (name === "matrix_send_message") {
+        if (name === "matrix_post") {
           return JSON.stringify({ id: "event_end", createdAt: new Date().toISOString() });
         }
         return originalCall(name, args);

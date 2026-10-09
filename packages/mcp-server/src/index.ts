@@ -82,9 +82,16 @@ function buildServer(accessToken: string): McpServer {
       const messages = await readRoom(client, roomId, limit);
       return { content: [{ type: "text", text: JSON.stringify(messages) }] };
     },
-    matrix_send_message: async ({ content, replyToEventId }) => {
+    // A Reply and a Room post are the same m.room.message send; only a Reply
+    // carries the rich-reply relation and fallback quote (ADR-0010).
+    matrix_reply: async ({ eventId, content }) => {
       const client = getMatrixClient(accessToken);
-      const sent = await sendMessage(client, roomId, content, replyToEventId);
+      const sent = await sendMessage(client, roomId, content, eventId);
+      return { content: [{ type: "text", text: JSON.stringify(sent) }] };
+    },
+    matrix_post: async ({ content }) => {
+      const client = getMatrixClient(accessToken);
+      const sent = await sendMessage(client, roomId, content);
       return { content: [{ type: "text", text: JSON.stringify(sent) }] };
     },
     matrix_add_reaction: async ({ eventId, reaction }) => {

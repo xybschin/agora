@@ -141,7 +141,7 @@ const STANCE_TOOL: ToolSpec = {
 
 /**
  * One agent in one Run. Each Turn is a tool-calling loop: the model itself
- * decides when to call matrix_read_room / matrix_send_message / update_stance,
+ * decides when to call matrix_read_room / matrix_reply / matrix_post / update_stance,
  * one round of tool-calls at a time, until it stops calling tools or hits the
  * per-turn tool-step limit (the safety cap against runaway loops, Q16 + Q21).
  */
@@ -366,7 +366,8 @@ export class AgentRuntime {
             resultText = `invalid stance (${String(args.stance)}) not applied; stance remains ${prior}`;
           }
         } else {
-          if (call.function.name === "matrix_send_message") {
+          const sendTool = call.function.name;
+          if (sendTool === "matrix_reply" || sendTool === "matrix_post") {
             // A model that emits the call without a body must not drop the turn
             // or reach the homeserver: `content` is required, and posting an
             // empty string would only land a meaningless event in the room. So a
@@ -381,7 +382,7 @@ export class AgentRuntime {
             const body = typeof args.content === "string" ? args.content : "";
             if (body.trim().length === 0) {
               resultText =
-                "matrix_send_message rejected: 'content' must be a non-empty string. Provide the message you want to post and call the tool again, or don't post.";
+                `${sendTool} rejected: 'content' must be a non-empty string. Provide the message you want to send and call the tool again, or don't send one.`;
               messages.push({
                 role: "tool",
                 tool_call_id: call.id,
@@ -401,8 +402,13 @@ export class AgentRuntime {
                 matrixEventId: sent.id,
                 roomId,
                 content: body,
+                // Only a Reply carries a target, so a message event without one
+                // is a deliberate Room post (ADR-0010). A stray target argument
+                // on matrix_post never reached the room and is not recorded.
                 replyToEventId:
-                  typeof args.replyToEventId === "string" ? args.replyToEventId : undefined,
+                  sendTool === "matrix_reply" && typeof args.eventId === "string"
+                    ? args.eventId
+                    : undefined,
                 timestamp: sent.createdAt,
               });
               // Only a fully successful post becomes a remembered commitment:
@@ -415,8 +421,8 @@ export class AgentRuntime {
                 this.ownMessageHistory.shift();
               }
             } catch (parseError) {
-              this.log.error("failed to parse matrix_send_message response:", resultText);
-              throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
+              this.log.error(`failed to parse ${sendTool} response:`, resultText);
+              throw new Error(`Invalid response from ${sendTool}: ${resultText}`);
             }
           } else {
             resultText = await mcp.callTool(call.function.name, args);

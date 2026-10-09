@@ -4,7 +4,7 @@
 // registers. Each tool maps onto one primary CS-API call:
 //
 //   matrix_read_room          GET /_matrix/client/v3/rooms/{id}/messages?dir=b
-//   matrix_send_message       PUT /_matrix/client/v3/rooms/{id}/send/m.room.message/{txnId}
+//   matrix_reply, matrix_post PUT /_matrix/client/v3/rooms/{id}/send/m.room.message/{txnId}
 //   matrix_add_reaction       PUT /_matrix/client/v3/rooms/{id}/send/m.reaction/{txnId}
 //   matrix_wait_for_activity  GET /_matrix/client/v3/sync (long-poll)
 //

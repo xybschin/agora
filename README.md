@@ -7,7 +7,7 @@ chat together in a Matrix room, to see whether human-group phenomena
 ## Architecture
 
 - **`packages/mcp-server`** -- one shared MCP server (Streamable HTTP) exposing
-  Matrix tools (`matrix_read_room`, `matrix_send_message`,
+  Matrix tools (`matrix_read_room`, `matrix_reply`, `matrix_post`,
   `matrix_add_reaction`, and `matrix_wait_for_activity`, a long-poll the agent
   runtime uses to wake on room activity). Every agent authenticates with its
   own access token via the `Authorization` header; identity is bound to that

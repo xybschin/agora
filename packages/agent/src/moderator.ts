@@ -122,7 +122,7 @@ const CLASSIFY_TOOL: ToolSpec = {
  * The Moderator's system prompt: read the room, classify the discussion, and
  * either post nothing (ACTIVE) or compose a closing message (STALE). The prompt
  * only states the classify-before-post rule; runTurn enforces it by rejecting
- * any matrix_send_message that is not preceded by a STALE classification.
+ * any matrix_post that is not preceded by a STALE classification.
  */
 function buildModeratorSystemPrompt(params: {
   topic: string;
@@ -146,8 +146,8 @@ You are not a participant; stay neutral and never express opinions on the topic.
 
 IMPORTANT STRUCTURAL CONSTRAINT (enforced by construction):
 - You MUST call classify_discussion exactly once per turn.
-- Posting a message (matrix_send_message) is ONLY reachable after classify_discussion returns "stale".
-- The two paths are mutually exclusive: if classification is "active", you CANNOT and MUST NOT call matrix_send_message.
+- Posting a message (matrix_post) is ONLY reachable after classify_discussion returns "stale".
+- The two paths are mutually exclusive: if classification is "active", you CANNOT and MUST NOT call matrix_post.
 
 ${buildPriorAssessmentsSection(priorAssessments, now)}`;
 }
@@ -406,7 +406,10 @@ export class ModeratorRuntime {
       timestamp: new Date().toISOString(),
     });
 
-    const mcpTools = await mcp.listToolSpecs();
+    // The Moderator only ever sends Room posts: a judge that Replies to one
+    // agent would appear to address one party (ADR-0010). So matrix_reply is
+    // withheld from its model, and refused below should it be called anyway.
+    const mcpTools = (await mcp.listToolSpecs()).filter((t) => t.function.name !== "matrix_reply");
     const tools = [...mcpTools, CLASSIFY_TOOL];
 
     const currentCount = await this.countRoomMessages();
@@ -440,7 +443,7 @@ export class ModeratorRuntime {
     let closingMessageId: string | null = null;
 
     // The model should call classify_discussion once per Assessment, and may
-    // call matrix_send_message only after a STALE one. The step cap guards
+    // call matrix_post only after a STALE one. The step cap guards
     // against runaway tool calling; the Assessment ends early as soon as the
     // model replies without tool calls.
     for (let step = 0; step < 10; step++) {
@@ -485,7 +488,7 @@ export class ModeratorRuntime {
               resultText =
                 "ERROR: The discussion cannot be STALE before every agent has spoken. " +
                 `These agents have not posted in the room yet: ${names}. ` +
-                "Your Assessment has been recorded as ACTIVE. Do not call matrix_send_message.";
+                "Your Assessment has been recorded as ACTIVE. Do not call matrix_post.";
             } else {
               resultText = `classification recorded: ${classification}`;
             }
@@ -499,14 +502,28 @@ export class ModeratorRuntime {
           } else {
             resultText = `invalid classification "${String(args.classification)}"; must be "active" or "stale"`;
           }
-        } else if (call.function.name === "matrix_send_message") {
+        } else if (call.function.name === "matrix_reply") {
+          // Not in the Moderator's tool list, but a model can name any tool.
+          // Refused rather than forwarded, so the closing message can never
+          // land as a Reply to one agent.
+          resultText =
+            "ERROR: matrix_reply is not available to the Moderator. Your closing message is a Room post: use matrix_post.";
+          await this.recordToolCall(call.function.name, args, resultText);
+          messages.push({
+            role: "tool",
+            tool_call_id: call.id,
+            name: call.function.name,
+            content: resultText,
+          });
+          continue;
+        } else if (call.function.name === "matrix_post") {
           // STRUCTURAL INVARIANT: posting is only reachable after a STALE
           // classification in this Assessment; anything else is rejected here,
           // so the prompt's rule does not depend on the model obeying it.
           if (classification !== "stale") {
             resultText =
               "ERROR: You can only post a message after classifying the discussion as STALE. " +
-              `Current classification is "${classification}". Do not call matrix_send_message.`;
+              `Current classification is "${classification}". Do not call matrix_post.`;
             await this.recordToolCall(call.function.name, args, resultText);
             messages.push({
               role: "tool",
@@ -520,7 +537,7 @@ export class ModeratorRuntime {
           const body = typeof args.content === "string" ? args.content : "";
           if (body.trim().length === 0) {
             resultText =
-              "matrix_send_message rejected: 'content' must be a non-empty string. Provide your closing message.";
+              "matrix_post rejected: 'content' must be a non-empty string. Provide your closing message.";
             await this.recordToolCall(call.function.name, args, resultText);
             messages.push({
               role: "tool",
@@ -549,8 +566,8 @@ export class ModeratorRuntime {
             });
             resultText = `message posted (${sent.id})`;
           } catch (parseError) {
-            this.log.error("failed to parse matrix_send_message response:", resultText);
-            throw new Error(`Invalid response from matrix_send_message: ${resultText}`);
+            this.log.error("failed to parse matrix_post response:", resultText);
+            throw new Error(`Invalid response from matrix_post: ${resultText}`);
           }
         } else {
           // Other MCP tools (e.g. matrix_read_room for reading the discussion).

@@ -480,6 +480,29 @@ describe("matrixActions sendMessage rich reply fallback", () => {
   });
 });
 
+describe("matrixActions sendMessage without a reply target", () => {
+  const client = { homeServerUrl: "https://hs.example", accessToken: "tok" };
+
+  test("a Room post is a plain message: no relation, no quote fetch", async () => {
+    // matrix_post sends with no target, so nothing may make it look like a
+    // Reply in the room: a missing reply link must mean a Room post (ADR-0010).
+    const calls = recordFetch((call) => {
+      if (call.url.includes("/send/m.room.message/")) {
+        return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+
+    const sent = await sendMessage(client, "!room:localhost", "to everyone");
+
+    expect(sent.id).toBe("$sent");
+    expect(calls.some((c) => c.url.includes("/event/"))).toBe(false);
+    const send = calls.find((c) => c.url.includes("/send/m.room.message/"));
+    const payload = JSON.parse(send!.body!);
+    expect(payload).toEqual({ msgtype: "m.text", body: "to everyone" });
+  });
+});
+
 describe("stripQuote", () => {
   test("removes agent-generated quote prefix when replying", () => {
     const input = `> <@agora-devon-elbs1:localhost>

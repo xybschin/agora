@@ -3,7 +3,8 @@ import {
   parseCredentialsFile,
   parseScenarioConfig,
   matrixReadRoomSchema,
-  matrixSendMessageSchema,
+  matrixReplySchema,
+  matrixPostSchema,
   matrixAddReactionSchema,
   matrixWaitForActivitySchema,
   matrixToolCatalog,
@@ -346,8 +347,12 @@ describe("the Matrix tool schemas", () => {
   // failing test rather than a quiet regression.
   const schemas = {
     matrix_read_room: { schema: matrixReadRoomSchema, minimal: {} },
-    matrix_send_message: {
-      schema: matrixSendMessageSchema,
+    matrix_reply: {
+      schema: matrixReplySchema,
+      minimal: { eventId: "$evt", content: "hello" },
+    },
+    matrix_post: {
+      schema: matrixPostSchema,
       minimal: { content: "hello" },
     },
     matrix_add_reaction: {
@@ -375,11 +380,26 @@ describe("the Matrix tool schemas", () => {
     // Zod strips what a schema does not name, so a model still free to pass a
     // roomId gets a valid call that quietly does not use it. That is the
     // behaviour we want: the argument cannot reach the homeserver.
-    const parsed = matrixSendMessageSchema.parse({
+    const parsed = matrixPostSchema.parse({
       roomId: "!hallucinated:localhost",
       content: "hello",
     });
     expect(parsed).toEqual({ content: "hello" });
+  });
+
+  test("a Reply names its target and a Room post cannot (ADR-0010)", () => {
+    // Picking the tool is the Reply/Room post choice, so the target is required
+    // on one and absent from the other -- there is no optional reply link left
+    // for a model to omit by accident.
+    expect(() => matrixReplySchema.parse({ content: "hello" })).toThrow();
+    expect(matrixReplySchema.parse({ eventId: "$evt", content: "hello" })).toEqual({
+      eventId: "$evt",
+      content: "hello",
+    });
+    expect(Object.keys(matrixPostSchema.shape)).toEqual(["content"]);
+    expect(matrixPostSchema.parse({ content: "hello", replyToEventId: "$evt" })).toEqual({
+      content: "hello",
+    });
   });
 
   test("the wait tool's timeout is bounded and its resume token is carried", () => {
@@ -411,7 +431,7 @@ describe("the Matrix tool catalog", () => {
   // not drift between the two sides. Descriptions are prompt text shown to the
   // model verbatim, so a reword here is a behavioral change -- these lock the
   // exact strings in.
-  test("covers the four Matrix tools with name, description and schema", () => {
+  test("covers the five Matrix tools with name, description and schema", () => {
     expect(matrixToolCatalog).toEqual([
       {
         name: "matrix_read_room",
@@ -419,10 +439,16 @@ describe("the Matrix tool catalog", () => {
         schema: matrixReadRoomSchema,
       },
       {
-        name: "matrix_send_message",
+        name: "matrix_reply",
         description:
-          "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
-        schema: matrixSendMessageSchema,
+          "Send a Reply: answer one specific earlier message by another participant, linked to it so the room shows it as a quoted response. Use this whenever your message agrees with, rebuts or builds on something a specific participant said. eventId is the id of that message; content is your text only, without any quote.",
+        schema: matrixReplySchema,
+      },
+      {
+        name: "matrix_post",
+        description:
+          "Send a Room post: a message to the room as a whole, answering no one in particular -- a new point, a summary, a question to everyone. If you are answering a specific participant, use matrix_reply instead.",
+        schema: matrixPostSchema,
       },
       {
         name: "matrix_add_reaction",
@@ -437,6 +463,10 @@ describe("the Matrix tool catalog", () => {
         schema: matrixWaitForActivitySchema,
       },
     ]);
+  });
+
+  test("the old optional-reply send tool is gone (ADR-0010)", () => {
+    expect(matrixToolCatalog.map(({ name }) => name)).not.toContain("matrix_send_message");
   });
 
   test("every catalog schema serializes to a JSON schema, as the client requires", () => {

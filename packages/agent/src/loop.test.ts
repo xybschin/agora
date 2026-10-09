@@ -15,8 +15,8 @@ import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
 // loop.ts drives its tool loop through `chatCompletion` from ./llm.js, so to
 // script what the model decides to do (which tool it calls, or whether it
 // stops) that module is mocked here, before ./loop.js is imported. The mcp
-// client is passed in as a plain stub, so matrix_send_message's success and
-// failure paths are both reachable without a real homeserver.
+// client is passed in as a plain stub, so the send tools' (matrix_post and
+// matrix_reply) success and failure paths are both reachable without a real homeserver.
 //
 // The mock replays a scripted list of assistant messages, one per
 // chatCompletion call; a message with no tool_calls ends the turn. A scripted
@@ -52,21 +52,36 @@ const AGENT: AgentDefinition = {
   },
 };
 
+/** A Room post (matrix_post) of `content`. */
 function sendCall(content: string): ToolCall {
   return {
     id: `call_${content}`,
     type: "function",
-    function: { name: "matrix_send_message", arguments: JSON.stringify({ content }) },
+    function: { name: "matrix_post", arguments: JSON.stringify({ content }) },
   };
 }
 
-/** A matrix_send_message whose arguments can be made to lack a body on purpose. */
-function rawSendCall(argumentsJson: string): ToolCall {
+/** A Reply (matrix_reply) of `content` to the message `eventId`. */
+function replyCall(eventId: string, content: string): ToolCall {
+  return {
+    id: `call_reply_${content}`,
+    type: "function",
+    function: { name: "matrix_reply", arguments: JSON.stringify({ eventId, content }) },
+  };
+}
+
+/** A send tool call whose arguments can be made to lack a body on purpose. */
+function rawSendCall(argumentsJson: string, name = "matrix_post"): ToolCall {
   return {
     id: "call_send_raw",
     type: "function",
-    function: { name: "matrix_send_message", arguments: argumentsJson },
+    function: { name, arguments: argumentsJson },
   };
+}
+
+/** Whether a tool name is one of the two send tools (ADR-0010). */
+function isSend(name: string): boolean {
+  return name === "matrix_post" || name === "matrix_reply";
 }
 
 function stanceCall(): ToolCall {
@@ -94,7 +109,7 @@ function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
 }
 
 // A module-level mcp stub whose callTool is swapped per test to simulate a
-// successful matrix_send_message (a well-formed event envelope) or a hard
+// successful send (a well-formed event envelope) or a hard
 // failure. listToolSpecs returns no extra tools; the runtime adds stance itself.
 // waitForActivity is exercised by the runLoop tests and stubbed to not block.
 const mcp: {
@@ -133,7 +148,7 @@ const OK_SEND = () => JSON.stringify({ id: "$evt", createdAt: "2026-01-01T00:00:
 describe("AgentRuntime own message history", () => {
   test("a successfully posted message is remembered in the queue", async () => {
     script = [assistant([sendCall("I think a 30 limit is right")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
+    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
     await runtime.runTurn();
@@ -155,19 +170,19 @@ describe("AgentRuntime own message history", () => {
   });
 
   test("a malformed send (missing content) is returned to the model to self-correct, not thrown", async () => {
-    // Script the model first calling matrix_send_message with no body, then --
+    // Script the model first calling a send tool with no body, then --
     // on seeing the rejection -- retrying with a real message. The turn must
     // survive the malformed call (the run was failing every turn on exactly
     // this), and the corrected message must be the only thing posted.
     script = [
-      assistant([rawSendCall(JSON.stringify({ replyToEventId: "$earlier" }))]),
+      assistant([rawSendCall(JSON.stringify({ eventId: "$earlier" }), "matrix_reply")]),
       assistant([sendCall("I think a 30 limit is right")]),
       assistant([stanceCall()]),
       assistant(),
     ];
     const sent: Array<Record<string, unknown>> = [];
     mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (name !== "matrix_send_message") return "{}";
+      if (!isSend(name)) return "{}";
       sent.push(args);
       return OK_SEND();
     };
@@ -192,7 +207,7 @@ describe("AgentRuntime own message history", () => {
     ];
     const sent: Array<Record<string, unknown>> = [];
     mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (name !== "matrix_send_message") return "{}";
+      if (!isSend(name)) return "{}";
       sent.push(args);
       return OK_SEND();
     };
@@ -206,7 +221,7 @@ describe("AgentRuntime own message history", () => {
 
   test("memory is isolated per agent", async () => {
     script = [assistant([sendCall("Alice posts")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
+    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const alice = makeRuntime({ agentId: "alice", agentDef: { ...AGENT, id: "alice" } });
     const bob = makeRuntime({
@@ -223,7 +238,7 @@ describe("AgentRuntime own message history", () => {
 
   test("memory is isolated per run: each fresh runtime starts empty", async () => {
     script = [assistant([sendCall("run one post")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
+    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     // A new Run is a fresh agent container with its own runtime (per
     // architecture each Run's compose stack is brought up separately), so it
@@ -261,12 +276,85 @@ describe("AgentRuntime own message history", () => {
       assistant([stanceCall()]),
       assistant(),
     ];
-    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "{}");
+    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
     await runtime.runTurn();
 
     expect(runtime.getOwnMessageHistory()).toEqual(["two", "three", "four"]);
+  });
+});
+
+describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
+  // Every agent message is exactly one Reply or one Room post, chosen by tool.
+  // The transcript's `message` event is where that choice is read back from:
+  // replyToEventId present means a Reply, absent means a deliberate Room post.
+  async function messageEventsAfter(calls: ToolCall[]) {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-reply-post-"));
+    script = [assistant(calls), assistant([stanceCall()]), assistant()];
+    const sent: Array<{ name: string; args: Record<string, unknown> }> = [];
+    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
+      if (!isSend(name)) return "{}";
+      sent.push({ name, args });
+      return OK_SEND();
+    };
+    const runtime = makeRuntime({ logDir });
+    await runtime.runTurn();
+    const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
+    const messages = raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((e) => e.type === "message");
+    return { messages, sent, runtime };
+  }
+
+  test("a Reply reaches the server with its target and records replyToEventId", async () => {
+    const { messages, sent, runtime } = await messageEventsAfter([replyCall("$bob1", "I disagree, Bob")]);
+
+    expect(sent).toEqual([{ name: "matrix_reply", args: { eventId: "$bob1", content: "I disagree, Bob" } }]);
+    expect(messages).toEqual([
+      expect.objectContaining({ content: "I disagree, Bob", replyToEventId: "$bob1", matrixEventId: "$evt" }),
+    ]);
+    // A Reply is the agent's own message like any other.
+    expect(runtime.getOwnMessageHistory()).toEqual(["I disagree, Bob"]);
+  });
+
+  test("a Room post records no replyToEventId", async () => {
+    const { messages, sent } = await messageEventsAfter([sendCall("A new point for everyone")]);
+
+    expect(sent).toEqual([{ name: "matrix_post", args: { content: "A new point for everyone" } }]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).not.toHaveProperty("replyToEventId");
+  });
+
+  test("a Room post that smuggles in a reply target still records none", async () => {
+    // matrix_post has no target; a stray argument must not turn it into a
+    // Reply in the transcript.
+    const { messages } = await messageEventsAfter([
+      rawSendCall(JSON.stringify({ content: "to everyone", eventId: "$x", replyToEventId: "$y" })),
+    ]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).not.toHaveProperty("replyToEventId");
+  });
+
+  test("a Reply with no content is refused as a tool result naming matrix_reply", async () => {
+    script = [
+      assistant([rawSendCall(JSON.stringify({ eventId: "$bob1" }), "matrix_reply")]),
+      assistant([stanceCall()]),
+      assistant(),
+    ];
+    const sent: unknown[] = [];
+    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
+      if (isSend(name)) sent.push(args);
+      return OK_SEND();
+    };
+    llmCalls = [];
+    await makeRuntime().runTurn();
+
+    expect(sent).toHaveLength(0);
+    const refusal = llmCalls[1]!.find((m) => m.role === "tool");
+    expect(String(refusal?.content)).toContain("matrix_reply rejected: 'content' must be a non-empty string");
   });
 });
 
@@ -399,6 +487,27 @@ describe("buildSystemPrompt speaking contract", () => {
     expect(prompt).toContain("silence is a valid choice if you have nothing to add");
     expect(prompt).toContain("Having nothing to add is never a failure");
     expect(prompt).toContain("don't force a message");
+  });
+
+  test("offers matrix_reply and matrix_post, not the old send tool", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain("matrix_reply");
+    expect(prompt).toContain("matrix_post");
+    expect(prompt).not.toContain("matrix_send_message");
+    expect(prompt).not.toContain("replyToEventId");
+  });
+
+  test("states the Reply/Room post rule and the several-participants rule (ADR-0010)", () => {
+    const prompt = promptFor();
+    expect(prompt).toContain(
+      "If your message agrees with, rebuts or builds on something a specific participant said, use matrix_reply on that message",
+    );
+    expect(prompt).toContain("Use matrix_post only when you are answering no one in particular");
+    expect(prompt).toContain(
+      "If you are answering several participants, Reply to the one you answer most directly and name the others in your text",
+    );
+    // The fallback quote is the system's job; an agent-written one would show twice.
+    expect(prompt).toContain('Do NOT include a quote ("> ...") in the message body');
   });
 
   test("still quotes own message history and forbids restating it", () => {
@@ -650,7 +759,7 @@ describe("AgentRuntime turn bracketing events", () => {
   async function turnEventsAfter(script_: Array<ScriptedMessage | Error>, runTurns = 1) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-turn-bracket-"));
     mcp.callTool = async (name: string) =>
-      name === "matrix_send_message" ? OK_SEND() : "{}";
+      isSend(name) ? OK_SEND() : "{}";
     const runtime = makeRuntime({ logDir });
     // A full 3-slot script per runTurn: turn, stance, stop.
     for (let i = 0; i < runTurns; i++) {
@@ -721,7 +830,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       waited += 1;
       return behavior(waited, args);
     };
-    mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : "[]");
+    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "[]");
     const runtime = makeRuntime({
       logDir,
       waitTimeoutMs: 100,
@@ -925,7 +1034,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       await runLoopOnce(
         2,
         async (n) => {
-          mcp.callTool = async (name: string) => (name === "matrix_send_message" ? OK_SEND() : room(n === 1 ? 2 : 5));
+          mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : room(n === 1 ? 2 : 5));
           return { hasActivity: true, nextBatch: `s${n + 1}` };
         },
         { turnRetry },
@@ -974,6 +1083,22 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
         "agent_turn_started",
         "agent_turn_failed",
       ]);
+      expect(sleeps).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a failed turn that already Replied is not re-run either", async () => {
+    script = [assistant([replyCall("$bob1", "hello Bob")]), new Error("503")];
+    const { turnRetry, sleeps } = fastTurnRetry(3);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events } = await runLoopOnce(1, async () => ({ hasActivity: true, nextBatch: "s2" }), {
+        turnRetry,
+      });
+
+      expect(events.filter((e) => e.type === "message")).toHaveLength(1);
       expect(sleeps).toEqual([]);
     } finally {
       errors.mockRestore();

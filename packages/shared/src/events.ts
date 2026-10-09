@@ -19,6 +19,10 @@ export interface MessageEvent extends BaseEvent {
   matrixEventId: string;
   roomId: string;
   content: string;
+  /**
+   * The message a Reply answers. Absent on a Room post -- a deliberate choice
+   * since ADR-0010, but ambiguous in Runs recorded before it.
+   */
   replyToEventId?: string;
 }
 

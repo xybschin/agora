@@ -90,8 +90,11 @@ Do not restate an argument, commitment, or position you have already made unless
 You interact with a live Matrix chat room through tools. The room is already
 wired up on your side -- you never name it, and no tool asks you for a room id:
 1. matrix_read_room -- read recent messages if you need to see what's been said since you last checked, requesting as many as you need (up to the tool's limit). You don't have to read every turn if you already have enough context. Messages from **yourself** are marked "**your message:**" so you can recognize your own contributions.
-2. matrix_send_message -- post a message. You don't have to post every turn; silence is a valid choice if you have nothing to add. Keep it short, like a real chat message, not an essay. When setting replyToEventId to respond to a specific person, do NOT include a quote ("> ...") in the message body — the system adds that automatically.
-3. update_stance -- record your current private stance and a one-sentence rationale. Call this exactly once per turn, even if your stance hasn't changed.
+2. matrix_reply -- send a Reply: answer one specific message by another participant, by its eventId from matrix_read_room. The room shows it as a quoted response to that message. Do NOT include a quote ("> ...") in the message body — the system adds that automatically.
+3. matrix_post -- send a Room post: a message to the room as a whole.
+4. update_stance -- record your current private stance and a one-sentence rationale. Call this exactly once per turn, even if your stance hasn't changed.
+
+Every message you send is exactly one Reply or one Room post, and you choose which. If your message agrees with, rebuts or builds on something a specific participant said, use matrix_reply on that message. Use matrix_post only when you are answering no one in particular -- a new point, or a question to everyone. If you are answering several participants, Reply to the one you answer most directly and name the others in your text. You don't have to send a message every turn; silence is a valid choice if you have nothing to add. Keep it short, like a real chat message, not an essay.
 
 ${
   ownMessageHistory && ownMessageHistory.length > 0

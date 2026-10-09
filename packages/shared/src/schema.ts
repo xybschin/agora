@@ -32,12 +32,20 @@ export const matrixReadRoomSchema = z.object({
     .describe("Max number of recent events/messages to return"),
 });
 
-export const matrixSendMessageSchema = z.object({
-  content: z.string().min(1).max(4000),
-  replyToEventId: z
+// Sending is two tools, not one with an optional reply link: agents given the
+// optional link almost never set it, so a message without one could not be read
+// as either answering someone or addressing the room (ADR-0010). Choosing the
+// tool is choosing between a Reply and a Room post (docs/CONTEXT.md).
+
+export const matrixReplySchema = z.object({
+  eventId: z
     .string()
-    .optional()
-    .describe("Event ID to reply to, if directly responding to someone"),
+    .describe("Event ID of the message by another participant that this Reply answers"),
+  content: z.string().min(1).max(4000),
+});
+
+export const matrixPostSchema = z.object({
+  content: z.string().min(1).max(4000),
 });
 
 export const matrixAddReactionSchema = z.object({
@@ -115,10 +123,16 @@ export const matrixToolCatalog: MatrixToolDefinition[] = [
     schema: matrixReadRoomSchema,
   },
   {
-    name: "matrix_send_message",
+    name: "matrix_reply",
     description:
-      "Post a message to the room. Set replyToEventId when directly responding to a specific earlier message.",
-    schema: matrixSendMessageSchema,
+      "Send a Reply: answer one specific earlier message by another participant, linked to it so the room shows it as a quoted response. Use this whenever your message agrees with, rebuts or builds on something a specific participant said. eventId is the id of that message; content is your text only, without any quote.",
+    schema: matrixReplySchema,
+  },
+  {
+    name: "matrix_post",
+    description:
+      "Send a Room post: a message to the room as a whole, answering no one in particular -- a new point, a summary, a question to everyone. If you are answering a specific participant, use matrix_reply instead.",
+    schema: matrixPostSchema,
   },
   {
     name: "matrix_add_reaction",
