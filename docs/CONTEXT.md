@@ -142,6 +142,27 @@ older is still visible in the room history if they choose to read it.
 _Avoid_: Scenario `memory` (an old tick-era field, removed; it conflated the
 agent's own commitments with the room). The real memory is this queue.
 
+**Reply**:
+An agent's message that answers one specific earlier message by another
+participant, linked to it so the room shows it as a quoted response. Its
+target is always a message in the Run's room — the seed and the Moderator's
+closing message included — never the agent's own, and never a reaction. Every
+agent message is exactly one of a **Reply** or a **Room post**, and the agent
+must say which when it sends; it cannot leave the choice implicit. This is
+a fixed rule of the harness, not something a Scenario configures. A message
+that answers several participants Replies to the one it answers most
+directly and names the others in its text.
+_Avoid_: Quote (the quote is how a Reply is displayed, not what it is),
+response (any message responds to the room in a loose sense)
+
+**Room post**:
+An agent's message addressed to the room as a whole rather than to any one
+message: a new point, a summary, a question to everyone. The deliberate
+counterpart of a **Reply**, chosen explicitly rather than by omission. The
+seed message and the Moderator's closing message are always Room posts; the
+Moderator never Replies, so it never appears to address one party.
+_Avoid_: Standalone message, broadcast, top-level message
+
 ## Example dialogue
 
 > **Dev**: Can I see the conversation for the remote-work-policy run?
@@ -167,3 +188,10 @@ agent's own commitments with the room). The real memory is this queue.
 > the room with. Since it also never speaks, nothing it does reaches the
 > Transcript. That's deliberate — the whole point is to watch a phenomenon
 > without becoming part of it.
+> **Dev**: In the transcript, Bob's message has no reply link. Did he just
+> forget to quote Alice?
+> **Domain expert**: He can't forget — every agent message is either a Reply
+> or a Room post, and he had to pick. No link means he chose a Room post:
+> he was talking to everyone, not answering Alice. If he'd been rebutting
+> both Alice and Carol, he'd have Replied to whichever he was answering
+> most directly and named the other.
