@@ -9,7 +9,8 @@
 //   matrix_wait_for_activity  GET /_matrix/client/v3/sync (long-poll)
 //
 // plus supporting reads: /account/whoami (who the caller is), /joined_members
-// (display names), and /rooms/{id}/event/{eventId} (reply quotes).
+// (display names), and /rooms/{id}/event/{eventId} (a Reply's target, checked
+// before sending and quoted in the Reply).
 //
 // Requests go through raw fetch rather than matrix-js-sdk. That keeps the
 // tools minimal, keeps the heavy SDK (and its crypto/olm dependencies) out of
@@ -274,56 +275,111 @@ export function stripQuote(content: string): string {
   return content;
 }
 
+/** A message that reached the room. */
+export interface SentMessage {
+  id: string;
+  createdAt: string;
+}
+
+/**
+ * A Reply refused before sending because its target is not one it may answer.
+ * An ordinary result, not an error: `rejected` says what was wrong and what to
+ * do instead, for the model to read and retry within its Turn (ADR-0010).
+ */
+export interface ReplyRejection {
+  rejected: string;
+}
+
+/**
+ * Fetches a Reply's target and checks it is one a Reply may answer: a message
+ * in this room (the fetch is scoped to it, so an id from elsewhere 404s like
+ * an unknown one), of type m.room.message rather than a reaction, and sent by
+ * someone other than the caller. Returns the target for its quote, or the
+ * rejection. Any failure of the fetch rejects -- the model may have made the
+ * id up -- but a failed whoami throws, as it would for any other tool.
+ */
+async function fetchReplyTarget(
+  client: MatrixClient,
+  roomId: string,
+  eventId: string,
+): Promise<RawEvent | ReplyRejection> {
+  let target: RawEvent;
+  try {
+    target = await csRequest<RawEvent>(
+      client,
+      "GET",
+      `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`,
+    );
+  } catch {
+    return {
+      rejected: `matrix_reply rejected: there is no message ${eventId} in this room to reply to. Use the eventId of another participant's message from matrix_read_room, or use matrix_post to address the room as a whole.`,
+    };
+  }
+  if (target.type !== "m.room.message") {
+    return {
+      rejected: `matrix_reply rejected: ${eventId} is an ${target.type} event, not a message, and only messages can be replied to. Reply to another participant's message instead, or use matrix_post.`,
+    };
+  }
+  if (target.sender === (await resolveOwnUserId(client))) {
+    return {
+      rejected: `matrix_reply rejected: ${eventId} is your own message, and a Reply answers someone else. Reply to another participant's message instead, or use matrix_post to add to the room as a whole.`,
+    };
+  }
+  return target;
+}
+
 /**
  * Build the plain-text fallback for a rich reply, per the Matrix "Rich replies"
  * convention: the `body` starts with the original event quoted sender-prefixed.
  * Clients that cannot render the `m.in_reply_to` relation fall back to this
  * text, so it should be the original message, not a placeholder. Returns
- * undefined when no quote can be produced (original has no body), in which case
- * the relation alone still carries the reply.
+ * undefined when the original has no body (a redacted message, say), in which
+ * case the relation alone still carries the reply.
  */
-async function replyFallback(
-  client: MatrixClient,
-  roomId: string,
-  eventId: string,
-): Promise<string | undefined> {
-  try {
-    const original = await csRequest<{
-      sender?: string;
-      content?: { body?: string };
-    }>(client, "GET", `/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`);
-    const originalBody = original.content?.body;
-    if (!originalBody) return undefined;
-    // Each line of the quoted original is prefixed with "> ", with an empty
-    // quote line ("> ") before the reply itself, as the spec's fallback does.
-    const quoted = originalBody
-      .split("\n")
-      .map((line) => (line.length > 0 ? `> ${line}` : `> `))
-      .join("\n");
-    return `> <${original.sender ?? "?"}>\n${quoted}`;
-  } catch {
-    // Don't block a send on quote-fetch failure; the relation is what matters.
-    return undefined;
-  }
+function replyFallback(original: RawEvent): string | undefined {
+  const originalBody = original.content?.body;
+  if (!originalBody) return undefined;
+  // Each line of the quoted original is prefixed with "> ", with an empty
+  // quote line ("> ") before the reply itself, as the spec's fallback does.
+  const quoted = originalBody
+    .split("\n")
+    .map((line) => (line.length > 0 ? `> ${line}` : `> `))
+    .join("\n");
+  return `> <${original.sender}>\n${quoted}`;
 }
 
 /**
  * Sends an m.text message to a room, optionally as a rich reply to
- * `replyToEventId`. A reply costs an extra request to fetch the original for
- * its quote. `createdAt` in the result is this server's clock at send time,
- * not the homeserver's origin_server_ts.
+ * `replyToEventId`. A reply first fetches its target (see fetchReplyTarget)
+ * and whoami, and is rejected without sending if the target is not one it may
+ * answer; the fetched target also supplies the quote. A failure of the send
+ * itself throws. `createdAt` in the result is this server's clock at send
+ * time, not the homeserver's origin_server_ts.
  */
 export async function sendMessage(
   client: MatrixClient,
   roomId: string,
   content: string,
+): Promise<SentMessage>;
+export async function sendMessage(
+  client: MatrixClient,
+  roomId: string,
+  content: string,
+  replyToEventId: string,
+): Promise<SentMessage | ReplyRejection>;
+export async function sendMessage(
+  client: MatrixClient,
+  roomId: string,
+  content: string,
   replyToEventId?: string,
-): Promise<{ id: string; createdAt: string }> {
+): Promise<SentMessage | ReplyRejection> {
   let body: Record<string, unknown> = {
     msgtype: "m.text",
     body: content,
   };
   if (replyToEventId) {
+    const target = await fetchReplyTarget(client, roomId, replyToEventId);
+    if ("rejected" in target) return target;
     // Drop any quote the agent wrote itself; replyFallback supplies the real
     // one below.
     const cleanContent = stripQuote(content);
@@ -337,9 +393,9 @@ export async function sendMessage(
       },
     };
     // Wrap the body per the "Rich replies" quoting convention: quote the
-    // original message (fetched by id) rather than a "<no-fallback>" stub, so
+    // original message (fetched above) rather than a "<no-fallback>" stub, so
     // the reply reads correctly in any client that shows the fallback text.
-    const fallback = await replyFallback(client, roomId, replyToEventId);
+    const fallback = replyFallback(target);
     if (fallback) {
       body["body"] = `${fallback}\n\n${cleanContent}`;
     }

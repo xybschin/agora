@@ -3,7 +3,7 @@
  * `AgoraEvent` is the closed union every writer constructs and every reader
  * switches on; eventLog.ts appends them, and runAnalysis.ts reads a Run status
  * back off them. Only `message` events make up the Transcript; the rest are
- * stances, usage, lifecycle markers, turn brackets and Moderator bookkeeping
+ * refused Replies, stances, usage, lifecycle markers, turn brackets and Moderator bookkeeping
  * recorded alongside it.
  */
 /** Fields every event carries. `timestamp` is an ISO-8601 string set by the writer. */
@@ -24,6 +24,20 @@ export interface MessageEvent extends BaseEvent {
    * since ADR-0010, but ambiguous in Runs recorded before it.
    */
   replyToEventId?: string;
+}
+
+/**
+ * A Reply the MCP server refused before sending, because its target was not
+ * another participant's message in the room (the agent's own, a reaction, an
+ * unknown id). Nothing reached the room, so there is no `message` event for it;
+ * the agent was told `reason` and could retry within the same Turn (ADR-0010).
+ */
+export interface ReplyRejectedEvent extends BaseEvent {
+  type: "reply_rejected";
+  agentId: string;
+  turn: number;
+  targetEventId: string;
+  reason: string;
 }
 
 /** An agent's recorded private stance on the topic, -1 (against) to +1 (in favor). */
@@ -172,6 +186,7 @@ export interface RunCompletedByModeratorEvent extends BaseEvent {
 
 export type AgoraEvent =
   | MessageEvent
+  | ReplyRejectedEvent
   | StanceEvent
   | UsageEvent
   | RunStartedEvent

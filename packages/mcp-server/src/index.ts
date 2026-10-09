@@ -83,7 +83,9 @@ function buildServer(accessToken: string): McpServer {
       return { content: [{ type: "text", text: JSON.stringify(messages) }] };
     },
     // A Reply and a Room post are the same m.room.message send; only a Reply
-    // carries the rich-reply relation and fallback quote (ADR-0010).
+    // carries the rich-reply relation and fallback quote (ADR-0010). A Reply
+    // to a target it may not answer comes back as an ordinary { rejected }
+    // result, not a tool error, for the agent loop to feed to the model.
     matrix_reply: async ({ eventId, content }) => {
       const client = getMatrixClient(accessToken);
       const sent = await sendMessage(client, roomId, content, eventId);

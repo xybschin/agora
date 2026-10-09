@@ -2,8 +2,8 @@
 // the token owner's messages as its own, resolves display names and shows
 // Replies with their fallback quote swapped for a short replyTo,
 // waitForActivity long-polls /sync without ever sending the room id,
-// sendMessage quotes the original in a rich reply (or degrades to a bare
-// reply), and stripQuote drops agent-written quotes. Two suites also check the agent's system prompt
+// sendMessage quotes the original in a rich reply and rejects a Reply whose
+// target is missing, not a message, or the caller's own, and stripQuote drops agent-written quotes. Two suites also check the agent's system prompt
 // (persona.ts), because the own-message marking and stance only work if the
 // prompt explains them.
 import { afterEach, describe, test, expect } from "bun:test";
@@ -532,26 +532,38 @@ describe("matrixActions waitForActivity long-poll", () => {
   });
 });
 
+/**
+ * Responds to the calls a Reply makes: the target fetched by id (a 404 when
+ * `target` is undefined), whoami as `ownId`, and the send itself.
+ */
+function replyResponder(target: Record<string, unknown> | undefined, ownId = "@alex:localhost") {
+  return (call: FetchCall): Response => {
+    if (call.url.includes("/event/")) {
+      return target
+        ? new Response(JSON.stringify(target), { status: 200 })
+        : new Response(JSON.stringify({ errcode: "M_NOT_FOUND" }), { status: 404 });
+    }
+    if (call.url.includes("/account/whoami")) {
+      return new Response(JSON.stringify({ user_id: ownId }), { status: 200 });
+    }
+    if (call.url.includes("/send/m.room.message/")) {
+      return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
+    }
+    return new Response("{}", { status: 200 });
+  };
+}
+
+const carolsMessage = {
+  sender: "@carol:localhost",
+  type: "m.room.message",
+  content: { msgtype: "m.text", body: "hi from carol" },
+};
+
 describe("matrixActions sendMessage rich reply fallback", () => {
   const client = { homeServerUrl: "https://hs.example", accessToken: "tok" };
 
   test("reply quotes the original message instead of '<no-fallback>'", async () => {
-    const calls = recordFetch((call) => {
-      if (call.url.includes("/event/")) {
-        // The replied-to event, as the homeserver returns it.
-        return new Response(
-          JSON.stringify({
-            sender: "@carol:localhost",
-            content: { msgtype: "m.text", body: "hi from carol" },
-          }),
-          { status: 200 },
-        );
-      }
-      if (call.url.includes("/send/m.room.message/")) {
-        return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
-      }
-      return new Response("{}", { status: 200 });
-    });
+    const calls = recordFetch(replyResponder(carolsMessage));
 
     await sendMessage(client, "!room:localhost", "and my reply", "$original");
 
@@ -564,29 +576,95 @@ describe("matrixActions sendMessage rich reply fallback", () => {
     expect(payload.body).toContain("and my reply");
     expect(payload.body).not.toContain("<no-fallback>");
   });
+});
 
-  test("fetch failure degrades to a bare reply with no fallback placeholder", async () => {
-    const calls = recordFetch((call) => {
-      if (call.url.includes("/event/")) {
-        return new Response("{}", { status: 404 });
-      }
-      if (call.url.includes("/send/m.room.message/")) {
-        return new Response(JSON.stringify({ event_id: "$sent" }), { status: 200 });
-      }
-      return new Response("{}", { status: 200 });
-    });
+describe("matrixActions sendMessage validates the Reply target (agora-jb3.2)", () => {
+  const client = { homeServerUrl: "https://hs.example", accessToken: "tok" };
+  const sentAnything = (calls: FetchCall[]) => calls.some((c) => c.url.includes("/send/"));
 
-    await sendMessage(client, "!room:localhost", "and my reply", "$original");
+  test("a Reply to the seed (another account's message) is sent", async () => {
+    const calls = recordFetch(
+      replyResponder({
+        sender: "@seed-author:localhost",
+        type: "m.room.message",
+        content: { msgtype: "m.text", body: "Should cities ban cars?" },
+      }),
+    );
 
-    const send = calls.find((c) => c.url.includes("/send/m.room.message/"));
-    expect(send).toBeDefined();
-    const payload = JSON.parse(send!.body!);
-    // Relation is still attached, but no quote placeholder pollutes the body.
-    expect(payload["m.relates_to"]["m.in_reply_to"].event_id).toBe("$original");
-    expect(payload.body).toBe("and my reply");
-    expect(payload.body).not.toContain("<no-fallback>");
+    const result = await sendMessage(client, "!room:localhost", "No.", "$seed");
+
+    expect(result).toMatchObject({ id: "$sent" });
+    expect(sentAnything(calls)).toBe(true);
+  });
+
+  test("a Reply to another agent's message is sent, fetching the target once", async () => {
+    const calls = recordFetch(replyResponder(carolsMessage));
+
+    const result = await sendMessage(client, "!room:localhost", "hi carol", "$carol");
+
+    expect(result).toMatchObject({ id: "$sent" });
+    // The one fetch both validates the target and supplies the quote.
+    expect(calls.filter((c) => c.url.includes("/event/")).length).toBe(1);
+  });
+
+  test("a Reply to the caller's own message is rejected and nothing is sent", async () => {
+    const calls = recordFetch(
+      replyResponder({
+        sender: "@alex:localhost",
+        type: "m.room.message",
+        content: { msgtype: "m.text", body: "my earlier point" },
+      }),
+    );
+
+    const result = await sendMessage(client, "!room:localhost", "adding to myself", "$mine");
+
+    expect(sentAnything(calls)).toBe(false);
+    const reason = (result as { rejected: string }).rejected;
+    expect(reason).toContain("your own message");
+    expect(reason).toContain("matrix_post");
+  });
+
+  test("a Reply to a reaction is rejected and nothing is sent", async () => {
+    const calls = recordFetch(
+      replyResponder({
+        sender: "@carol:localhost",
+        type: "m.reaction",
+        content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$x", key: "+1" } },
+      }),
+    );
+
+    const result = await sendMessage(client, "!room:localhost", "nice", "$reaction");
+
+    expect(sentAnything(calls)).toBe(false);
+    const reason = (result as { rejected: string }).rejected;
+    expect(reason).toContain("m.reaction");
+    expect(reason).toContain("matrix_post");
+  });
+
+  test("a Reply to an unknown or foreign event id is rejected and nothing is sent", async () => {
+    // The homeserver answers 404 both for an id that does not exist and for
+    // one from another room, since the fetch is scoped to the Run's room.
+    const calls = recordFetch(replyResponder(undefined));
+
+    const result = await sendMessage(client, "!room:localhost", "hello?", "$nowhere");
+
+    expect(sentAnything(calls)).toBe(false);
+    const reason = (result as { rejected: string }).rejected;
+    expect(reason).toContain("$nowhere");
+    expect(reason).toContain("matrix_post");
+  });
+
+  test("a homeserver failure on the send itself still throws rather than rejecting", async () => {
+    recordFetch((call) =>
+      call.url.includes("/send/m.room.message/")
+        ? new Response("boom", { status: 500 })
+        : replyResponder(carolsMessage)(call),
+    );
+
+    await expect(sendMessage(client, "!room:localhost", "hi", "$carol")).rejects.toThrow("(500)");
   });
 });
+
 
 describe("matrixActions sendMessage without a reply target", () => {
   const client = { homeServerUrl: "https://hs.example", accessToken: "tok" };

@@ -122,6 +122,21 @@ const OWN_MESSAGE_HISTORY_MAX = 3;
  */
 const ROOM_COUNT_LIMIT = 100;
 
+/**
+ * The reason from a matrix_reply result of the form { rejected: <reason> }, the
+ * MCP server's answer when a Reply's target may not be answered; undefined for
+ * anything else, including text that is not JSON, which the send path then
+ * reports as an invalid response.
+ */
+function replyRejection(resultText: string): string | undefined {
+  try {
+    const parsed = JSON.parse(resultText) as { rejected?: unknown } | null;
+    return typeof parsed?.rejected === "string" ? parsed.rejected : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 const STANCE_TOOL: ToolSpec = {
   type: "function",
   function: {
@@ -243,7 +258,7 @@ export class AgentRuntime {
   /**
    * Takes one Turn, posting to the room if the model chooses to. Writes to the
    * Run's event log: `agent_turn_started`, a `usage` per LLM call, a `message`
-   * per post, a `stance` per update_stance call (or one carried-over `stance`
+   * per post, a `reply_rejected` per Reply the MCP server refused, a `stance` per update_stance call (or one carried-over `stance`
    * if the model made none), and finally `agent_turn_ended`. Throws when the
    * turn cannot complete (an LLM call that outlasted its retries, a rejected
    * send), leaving the bracket for runLoop to close with `agent_turn_failed`.
@@ -392,6 +407,30 @@ export class AgentRuntime {
               continue;
             }
             resultText = await mcp.callTool(call.function.name, { ...args, content: body });
+            // A Reply whose target the MCP server refused (the agent's own
+            // message, a reaction, an unknown id) sent nothing. Like the empty
+            // body above, the reason goes back to the model as the tool result
+            // so it can retry within the turn; it is recorded, but not as a
+            // message, and does not count as having posted.
+            const rejection = sendTool === "matrix_reply" ? replyRejection(resultText) : undefined;
+            if (rejection !== undefined) {
+              await appendEvent(logDir, runId, {
+                type: "reply_rejected",
+                runId,
+                agentId,
+                turn,
+                targetEventId: typeof args.eventId === "string" ? args.eventId : String(args.eventId),
+                reason: rejection,
+                timestamp: new Date().toISOString(),
+              });
+              messages.push({
+                role: "tool",
+                tool_call_id: call.id,
+                name: call.function.name,
+                content: resultText,
+              });
+              continue;
+            }
             this.postedThisTurn = true;
             try {
               const sent = JSON.parse(resultText) as { id: string; createdAt: string };

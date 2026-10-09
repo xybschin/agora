@@ -358,6 +358,86 @@ describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
   });
 });
 
+describe("AgentRuntime rejected Replies (agora-jb3.2)", () => {
+  // The MCP server refuses a Reply to the agent's own message, a reaction or an
+  // unknown id with an ordinary { rejected } result and sends nothing. The loop
+  // must hand that back to the model within the Turn, not fail the Turn.
+  const REJECTION = "matrix_reply rejected: $mine is your own message. Use matrix_post.";
+
+  /** Rejects Replies to `$mine`, accepts every other send; records what was sent. */
+  function rejectingOwnTarget() {
+    const sent: Array<Record<string, unknown>> = [];
+    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
+      if (!isSend(name)) return "{}";
+      if (name === "matrix_reply" && args.eventId === "$mine") {
+        return JSON.stringify({ rejected: REJECTION });
+      }
+      sent.push(args);
+      return OK_SEND();
+    };
+    return sent;
+  }
+
+  async function readEvents(logDir: string) {
+    const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
+    return raw
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+  }
+
+  test("a rejection is the tool result, and the model's retry within the Turn is posted", async () => {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-reply-rejected-"));
+    script = [
+      assistant([replyCall("$mine", "adding to myself")]),
+      assistant([replyCall("$bob1", "I disagree, Bob")]),
+      assistant([stanceCall()]),
+      assistant(),
+    ];
+    const sent = rejectingOwnTarget();
+    llmCalls = [];
+    const runtime = makeRuntime({ logDir });
+    await runtime.runTurn();
+
+    // The model saw the reason before its second step.
+    const toolResult = llmCalls[1]!.find((m) => m.role === "tool");
+    expect(String(toolResult?.content)).toContain(REJECTION);
+
+    const events = await readEvents(logDir);
+    expect(events.filter((e) => e.type === "reply_rejected")).toEqual([
+      expect.objectContaining({
+        runId: "scenario-test",
+        agentId: "alice",
+        turn: 1,
+        targetEventId: "$mine",
+        reason: REJECTION,
+        timestamp: expect.any(String),
+      }),
+    ]);
+    // Only the retry reached the room and the transcript.
+    expect(sent).toEqual([{ eventId: "$bob1", content: "I disagree, Bob" }]);
+    expect(events.filter((e) => e.type === "message")).toEqual([
+      expect.objectContaining({ content: "I disagree, Bob", replyToEventId: "$bob1" }),
+    ]);
+    expect(runtime.getOwnMessageHistory()).toEqual(["I disagree, Bob"]);
+  });
+
+  test("a rejection the model does not retry leaves no message event and the Turn ends normally", async () => {
+    const logDir = await mkdtemp(path.join(tmpdir(), "agora-reply-rejected-"));
+    script = [assistant([replyCall("$mine", "adding to myself")]), assistant([stanceCall()]), assistant()];
+    rejectingOwnTarget();
+    const runtime = makeRuntime({ logDir });
+    await runtime.runTurn(); // does not throw
+
+    const types = (await readEvents(logDir)).map((e) => e.type);
+    expect(types).toContain("reply_rejected");
+    expect(types).not.toContain("message");
+    expect(types).toContain("agent_turn_ended");
+    expect(types).not.toContain("agent_turn_failed");
+    expect(runtime.getOwnMessageHistory()).toEqual([]);
+  });
+});
+
 describe("buildSystemPrompt own-message section", () => {
   const base = {
     persona: AGENT.persona,
@@ -1100,6 +1180,34 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
 
       expect(events.filter((e) => e.type === "message")).toHaveLength(1);
       expect(sleeps).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  test("a failed turn whose only Reply was rejected is re-run, since nothing reached the room", async () => {
+    script = [assistant([replyCall("$mine", "hello me")]), new Error("503"), assistant([stanceCall()]), assistant()];
+    const { turnRetry, sleeps } = fastTurnRetry(3);
+    const errors = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { events } = await runLoopOnce(
+        1,
+        async () => {
+          mcp.callTool = async (name: string) =>
+            name === "matrix_reply" ? JSON.stringify({ rejected: "your own message" }) : "[]";
+          return { hasActivity: true, nextBatch: "s2" };
+        },
+        { turnRetry },
+      );
+
+      expect(events.filter((e) => e.type === "message")).toHaveLength(0);
+      expect(events.filter((e) => e.type.startsWith("agent_turn_")).map((e) => e.type)).toEqual([
+        "agent_turn_started",
+        "agent_turn_failed",
+        "agent_turn_started",
+        "agent_turn_ended",
+      ]);
+      expect(sleeps).toEqual([1_000]);
     } finally {
       errors.mockRestore();
     }
