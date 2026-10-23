@@ -29,7 +29,7 @@ describes.
 
 ## Consequences
 
-- **Run status is derived, not stored** (see `docs/CONTEXT.md` — *Run
+- **Run status is derived, not stored** (see `docs/GLOSSARY.md` — *Run
   status*): the runner never writes a "completed" event on success, only
   `run_aborted` on failure (`packages/runner/src/index.ts:80-91`), so the
   dashboard must infer completed/aborted/incomplete from the transcript's

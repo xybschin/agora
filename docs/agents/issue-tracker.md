@@ -1,130 +1,46 @@
-# Issue tracker: beads (`bd`)
+# Issue tracker: GitHub
 
-Issues and specs for this repo live in **beads**, a CLI issue tracker backed by Dolt.
-There are no issue or spec files in the repo — `bd` is the store.
-
-> Requires the `bd` binary on PATH, and `bd init --quiet` run once if `.beads/` is absent.
-> Read with `--json` and parse it — never scrape human-readable output, which omits labels.
-> Run `bd dolt push` at the end of any session that changed the tracker.
+Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
 
 ## Conventions
 
-- **Spec** (`/to-spec`) → one `epic` issue, body in `--description`, labelled `spec`.
-  No `SPEC.md` file, no feature directory.
-- **Ticket** (`/to-tickets`) → one issue per ticket with `--parent <epic-id>`, which gives
-  it a hierarchical id (`bd-a3f8e9.1`, `.2`, …). Type is the author's call: `task`
-  (the default) for most slices, `chore` for prefactors, `bug` for defects.
-- **Blocking** → native edges. Only the `blocks` type gates readiness; `parent-child`
-  deliberately does not, so a ticket is never blocked by its own epic.
-- **Priority** is `-p 0..4`, 0 most urgent, default 2.
-- **Comments** carry conversation history: `bd comments add <id> "<text>"`.
+- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
+- **Read an issue**: `gh issue view <number> --json number,title,body,labels,comments`.
+- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
+- **Make an issue a sub-issue of a parent**: `gh issue create --parent <parent> ...`, or `gh issue edit <parent> --add-sub-issue <child>` afterwards (`gh` 2.94+). Older `gh`: `gh api --method POST repos/<owner>/<repo>/issues/<parent>/sub_issues -F sub_issue_id=<child-db-id>` (database id, as in **Blocking** below). Without sub-issues, put `Part of #<parent>` at the top of the child body.
+- **Comment on an issue**: `gh issue comment <number> --body "..."`
+- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
+- **Close**: `gh issue close <number> --comment "..."`
 
-### Triage roles are labels, with two status side-effects
+Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
-The five roles in `triage-labels.md` are **labels** (`-l` at create, `--add-label` /
-`--remove-label` after), not statuses. `ready-for-agent` and `ready-for-human` would
-collapse onto the same status — both are open, unblocked work differing only in who may
-take it — so status cannot express the vocabulary. Keeping them as labels also means a
-customised right-hand column in `triage-labels.md` works verbatim.
+## Pull requests as a triage surface
 
-Beads' own statuses (`open`, `in_progress`, `blocked`, `deferred`, `closed`) are a
-separate readiness axis: they answer "can this be worked now", where triage answers "has
-a maintainer decided what this is". Two roles must move the status as well, or
-`bd ready` will offer work nobody can finish:
+**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `@triage` reads this flag.)_
 
-- `needs-info` → also `bd update <id> --status blocked`
-- `wontfix` → also `bd close <id> --reason wontfix`
+When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
 
-`needs-triage`, `ready-for-agent` and `ready-for-human` leave the status `open`.
+- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
+- **List external PRs for triage**: `gh api --paginate 'repos/{owner}/{repo}/pulls?state=open' --jq '.[] | select(.author_association | IN("OWNER","MEMBER","COLLABORATOR") | not) | {number, title, author: .user.login, author_association, labels: [.labels[].name]}'`.
+- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
+
+GitHub shares one number space across issues and PRs, so a bare `#42` may be either: resolve with `gh pr view 42` and fall back to `gh issue view 42`.
 
 ## When a skill says "publish to the issue tracker"
 
-`bd create`. Map the skill's issue template onto native fields rather than markdown
-headings:
-
-| Template section         | Beads                                                          |
-| ------------------------ | -------------------------------------------------------------- |
-| `## Parent`              | `--parent <id>` (omit for a top-level issue)                     |
-| `## What to build`       | `-d/--description`                                               |
-| `## Acceptance criteria` | `--acceptance "- [ ] …"` (the flag is `--acceptance`)            |
-| `## Blocked by`          | omit from the body — carried by the dependency graph             |
-
-Add `--design` only when a prototype produced something prose can't carry precisely
-(state machine, schema, type shape).
-
-Publish **in dependency order, blockers first**. Each create prints its id, so a blocker
-that already exists can be wired inline with `--deps`:
-
-```
-bd create "Extract the payment gateway seam" -t chore -p 1 \
-  --parent bd-a3f8e9 -l ready-for-agent \
-  -d "<what to build>" --acceptance "- [ ] …" --silent     # prints bd-a3f8e9.1
-
-bd create "Charge a card through the seam" -p 1 \
-  --parent bd-a3f8e9 -l ready-for-agent --deps bd-a3f8e9.1 \
-  -d "<what to build>" --acceptance "- [ ] …" --silent      # prints bd-a3f8e9.2
-```
-
-Read each printed id and paste it literally into the next command. Don't capture it in a
-shell variable — each command is its own invocation and shell state does not persist.
-
-`--deps` only expresses "this new issue is blocked by an existing one". When a new issue
-must **block** one that already exists, wire it afterwards:
-
-```
-bd dep add <blocked-id> <blocker-id>
-```
-
-**Sibling order is never implied by `--parent`.** A `parent-child` link blocks children
-only when the *parent* is blocked; it says nothing about the order of siblings. Ordering
-is always an explicit `blocks` edge.
+Create a GitHub issue.
 
 ## When a skill says "fetch the relevant ticket"
 
-```
-bd show <id> --json --include-dependents
-```
+Read it as in **Read an issue** above.
 
-The user normally passes the id; if they pass a title, find it with `bd list --json`.
-`bd dep tree <id>` renders the graph; `bd blocked` lists what is stuck.
+## Wayfinding operations
 
-## Frontier, claim, resolve
+Used by `@wayfinder`. The **map** is a single issue with **child** issues as tickets.
 
-The frontier is the open, unblocked, unclaimed work — what can be started right now.
-Used by `/implement` to take its next ticket, and by `/wayfinder` to walk a map.
-
-- **Frontier**: `bd ready --unassigned --json`. Scope it to one feature or map with
-  `--parent <epic-id>`, and to agent-grabbable work with `--label ready-for-agent`.
-  Add `--explain` to see why something is or isn't ready. An empty result means
-  everything is either done or blocked — `bd blocked` tells you which.
-- **Claim**: `bd update <id> --claim` before any work — one atomic write setting assignee
-  and `in_progress`, so a concurrent session cannot take the same ticket. To take the next
-  frontier ticket in a single step: `bd ready --parent <epic-id> --claim --json`.
-- **Close**: `bd close <id> --reason "<what landed>"`.
-- **Discovered work**: `bd create "<title>" --deps discovered-from:<current-id> ...` — a
-  non-blocking annotation recording where the work came from, so it doesn't gate anything.
-
-### Wayfinding operations
-
-Used by `/wayfinder`. The **map** is an epic; its tickets are `--parent` children.
-
-- **Map**: `bd create "<effort name>" -t epic -l wayfinder:map -d "<Destination / Notes /
-  Decisions so far / Not yet specified / Out of scope body>"`. Both `/to-spec` and
-  `/wayfinder` mint epics, so the label — not the type — is what identifies a map.
-  Index them with `bd list --label-any wayfinder:map --json`.
-- **Child ticket**: `bd create "<question as title>" --parent <map-id>
-  -l wayfinder:<type> --no-inherit-labels -d "## Question …"`, where `<type>` is
-  `research` / `prototype` / `grilling` / `task`. `--no-inherit-labels` stops
-  `wayfinder:map` spreading to every child. Keep the type as a label and leave `-t` at
-  its default: beads' type enum collides with wayfinder's only on the word "task", where
-  the two mean different things.
-- **Blocking**: `bd dep add <blocked-id> <blocker-id>` — the native `blocks` edge, so the
-  frontier renders in the tracker's own views.
-- **Frontier and claim**: as above, scoped with `--parent <map-id>`. Scoping by parent
-  also excludes the map epic itself.
-- **Resolve**: `bd comments add <id> "<the answer>"`, then
-  `bd close <id> --reason "<one-line gist>"`, then append a context pointer (ticket title,
-  its id, and the gist) to the map's Decisions so far. Beads has no append-to-description,
-  so that last step is read-modify-write: `bd show <map-id> --json`, edit the body,
-  `bd update <map-id> --description "<whole new body>"`. Re-read immediately before
-  writing — other sessions edit the map concurrently.
+- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
+- **Child ticket**: an issue linked to the map as a GitHub sub-issue (see **Make an issue a sub-issue of a parent**). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
+- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
+- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
+- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write. GitHub has no atomic claim, so re-read the issue afterwards; if another assignee landed first, unassign yourself and take the next frontier ticket.
+- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.

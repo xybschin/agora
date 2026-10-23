@@ -5,7 +5,7 @@ How the engineering skills should consume this repo's domain documentation when 
 
 Both exist:
 
-- `docs/CONTEXT.md` — the domain glossary
+- `docs/GLOSSARY.md` — the domain glossary
 - `docs/adr/` — architectural decision records, numbered `NNNN-slug.md`
 
 `/domain-modeling` adds a term or a decision when one actually gets resolved, so
@@ -13,11 +13,11 @@ both grow over time. Don't create them upfront.
 
 ## Read
 
-- `docs/CONTEXT.md` for the domain glossary relevant to the area you're working in
+- `docs/GLOSSARY.md` for the domain glossary relevant to the area you're working in
 - Any ADRs in `docs/adr/` that touch that area
 
 ## Use the glossary's vocabulary
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `docs/CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `docs/GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 

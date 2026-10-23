@@ -114,7 +114,7 @@ bootstrap the accounts once, then run as many times as you like.
 
 Per-run JSONL logs land in `logs/<runId>/events.jsonl`: messages, stances and
 usage, plus Turn, heartbeat and Assessment events and the Run's start and
-ending (see **Run status** in `docs/CONTEXT.md`).
+ending (see **Run status** in `docs/GLOSSARY.md`).
 
 ### Reclaiming a finished Run
 

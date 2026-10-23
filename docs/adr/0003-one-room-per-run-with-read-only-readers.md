@@ -7,7 +7,7 @@ status: accepted
 A Run used to execute against a single room created once by
 `matrixBootstrap.ts` and reused by every subsequent Run of that Scenario, so
 the agents in a later Run would read the earlier Runs' conversation before
-posting anything — even though `docs/CONTEXT.md` claimed each Run yields an
+posting anything — even though `docs/GLOSSARY.md` claimed each Run yields an
 independent conversation. Room creation therefore moved into the runner, and
 `matrixBootstrap.ts` now only registers the setup account and one account per
 agent. Alongside this, each Run's room admits its Scenario's declared

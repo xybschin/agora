@@ -16,7 +16,7 @@ else's message.
 `matrix_send_message` is replaced by two tools: `matrix_reply({ eventId,
 content })` and `matrix_post({ content })`. Picking a tool is the choice, so
 every agent message is exactly one **Reply** or one **Room post** (see
-`docs/CONTEXT.md`). A Reply's target must be an `m.room.message` in the Run's
+`docs/GLOSSARY.md`). A Reply's target must be an `m.room.message` in the Run's
 room sent by someone else; the MCP server checks this before sending and
 returns `{ rejected: <reason> }` as an ordinary result, which the agent loop
 feeds back to the model within the same Turn (recording `reply_rejected`)

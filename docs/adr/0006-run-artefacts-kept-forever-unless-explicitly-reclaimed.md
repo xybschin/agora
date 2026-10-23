@@ -82,7 +82,7 @@ cannot be reached by accident:
 - ADR-0001, cited above for "read the logs, not a metadata store", is
   superseded by ADR-0004. The principle stands on its own here: Run status is
   derived from `logs/<runId>/events.jsonl` at reclaim time, as
-  `docs/CONTEXT.md` defines it.
+  `docs/GLOSSARY.md` defines it.
 - Room deletion now goes through Synapse's admin API with a separate
   server-admin credential, deletes the room before the logs, and resolves the
   room by name through the admin room list rather than the public room

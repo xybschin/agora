@@ -12,10 +12,10 @@ lives under `docs/agents/`.
 
 ## Index
 
-- **Domain docs** — the glossary at `docs/CONTEXT.md` and the ADRs at `docs/adr/` (`NNNN-slug.md`) both exist; read them before exploring.
+- **Domain docs** — the glossary at `docs/GLOSSARY.md` and the ADRs at `docs/adr/` (`NNNN-slug.md`) both exist; read them before exploring.
   See [domain.md](./domain.md).
-- **Issue tracker** — beads (`bd`), a Dolt-backed CLI tracker. There are no issue or spec
-  files in the repo; `bd` is the store. See [issue-tracker.md](./issue-tracker.md).
+- **Issue tracker** — GitHub issues in the repo's own `agora` repo, read and written
+  via the `gh` CLI. See [issue-tracker.md](./issue-tracker.md).
 - **Triage labels** — canonical role names used as-is (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix).
   See [triage-labels.md](./triage-labels.md).
 

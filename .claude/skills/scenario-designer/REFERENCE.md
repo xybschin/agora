@@ -106,7 +106,7 @@ Required fields, all enforced by `parseScenarioConfig`:
 | `observers` | array of Matrix user ids, optional | human Readers invited into each Run's room (ADR-0003) |
 
 A Scenario is a **template** — each execution produces an independent Run with
-its own transcript in `logs/<runId>/events.jsonl` (see `docs/CONTEXT.md`).
+its own transcript in `logs/<runId>/events.jsonl` (see `docs/GLOSSARY.md`).
 
 ## How `validate.mts` works (safety net, not the design)
 

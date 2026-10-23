@@ -1,5 +1,18 @@
 {
   "enabledPlugins": {
     "typescript-lsp@claude-plugins-official": true
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "adscaile-flow hook stop --harness claude-code",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }

@@ -43,7 +43,7 @@ scripts are not coming back, and that the references to them are deleted.
   drop the Python environment and the analysis commands along with them.
 - ADR-0001 and ADR-0002 are marked superseded rather than deleted. What they
   decided still holds as background — derived Run status and Scenario linkage
-  by `runId` suffix are both in `docs/CONTEXT.md` — but the package they
+  by `runId` suffix are both in `docs/GLOSSARY.md` — but the package they
   describe is not in the repo.
 - `packages/shared/src/runAnalysis.ts` is unaffected: it derives Run status and
   parses `runId` in TypeScript, as part of the runner, and has nothing to do

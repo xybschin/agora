@@ -83,7 +83,7 @@ discussion has stalled.
 - **Per-agent liveness is bracketed by `agent_turn_started`/`agent_turn_ended`
   and heartbeats, not by `tick_start`/`tick_end`.** Each agent's turn is its
   own unit of activity (see **Turn** in the glossary, updated in
-  `docs/CONTEXT.md`). The per-agent turn counter is monotonic within a Run
+  `docs/GLOSSARY.md`). The per-agent turn counter is monotonic within a Run
   and independent per agent, replacing the shared global tick. Heartbeat
   events fill the gaps between turns.
 - **Wall-clock safety backstop replaces tick-count-based limits.** The

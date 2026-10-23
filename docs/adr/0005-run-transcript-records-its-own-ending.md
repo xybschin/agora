@@ -78,7 +78,7 @@ that had become a trap for the next reader of the union.
 
 ## Consequences
 
-- `Run status` in `docs/CONTEXT.md` is restated as recorded rather than
+- `Run status` in `docs/GLOSSARY.md` is restated as recorded rather than
   derived, and names the three outcomes and the events that produce them. This
   amends the "derived Run status" that ADR-0004 recorded as surviving
   background; the glossary, not ADR-0001, is the current statement of the
