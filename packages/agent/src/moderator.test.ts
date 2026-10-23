@@ -9,6 +9,14 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
+import type {
+  PostOutcome,
+  ReactionOutcome,
+  ReplyOutcome,
+  RoomMessage,
+  RoomToolKind,
+} from "./mcpClient.js";
+import { MatrixMcpClient } from "./mcpClient.js";
 
 // moderator.ts drives its tool loop through chatCompletion, so we mock
 // that before importing the module. The mcp client is passed in as a stub.
@@ -92,39 +100,53 @@ function replyCall(eventId: string, content: string): ToolCall {
   };
 }
 
-/** A tool spec as MatrixMcpClient.listToolSpecs advertises one. */
-function toolSpec(name: string): ToolSpec {
-  return { type: "function", function: { name, description: name, parameters: { type: "object" } } };
-}
-
 function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
   return { role: "assistant", content: tool_calls ? "thinking..." : "done", tool_calls };
 }
 
+function roomOf(n: number): RoomMessage[] {
+  return Array.from({ length: n }, (_, i) => ({
+    eventId: `$m${i}`,
+    sender: "@member:localhost",
+    senderDisplayName: "Member",
+    content: `message ${i}`,
+    createdAt: "2026-01-01T00:00:00Z",
+  }));
+}
+
 interface McpStub {
-  listToolSpecs: () => Promise<ToolSpec[]>;
-  callTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+  listToolSpecs: (options?: { exclude?: readonly RoomToolKind[] }) => ToolSpec[];
+  readRoom: (limit?: number) => Promise<RoomMessage[]>;
+  reply: (eventId: string, content: string) => Promise<ReplyOutcome>;
+  post: (content: string) => Promise<PostOutcome>;
+  addReaction: (eventId: string, reaction: string) => Promise<ReactionOutcome>;
   waitForActivity: (args: { timeoutMs: number; since?: string }) => Promise<{ hasActivity: boolean; nextBatch: string }>;
 }
 
 function createMcpStub(params?: {
-  readRoomResult?: string;
-  sendMessageResult?: string;
-  sendMessageError?: Error;
+  readRoom?: RoomMessage[];
+  readRoomError?: Error;
+  sentId?: string;
+  postError?: Error;
   waitForActivityResult?: { hasActivity: boolean; nextBatch: string };
 }): McpStub {
   return {
-    listToolSpecs: async () => [],
-    callTool: async (name: string, _args: Record<string, unknown>): Promise<string> => {
-      if (name === "matrix_read_room") {
-        return params?.readRoomResult ?? JSON.stringify([]);
-      }
-      if (name === "matrix_post") {
-        if (params?.sendMessageError) throw params.sendMessageError;
-        return params?.sendMessageResult ?? JSON.stringify({ id: "event_1", createdAt: new Date().toISOString() });
-      }
-      throw new Error(`unexpected tool: ${name}`);
+    listToolSpecs: () => [],
+    readRoom: async () => {
+      if (params?.readRoomError) throw params.readRoomError;
+      return params?.readRoom ?? [];
     },
+    reply: async () => {
+      throw new Error("the Moderator never replies");
+    },
+    post: async (_content) => {
+      if (params?.postError) throw params.postError;
+      return {
+        kind: "sent",
+        message: { id: params?.sentId ?? "event_1", createdAt: new Date().toISOString() },
+      };
+    },
+    addReaction: async () => ({ kind: "done" }),
     waitForActivity: async (_args: { timeoutMs: number; since?: string }) =>
       params?.waitForActivityResult ?? { hasActivity: false, nextBatch: "s1" },
   };
@@ -178,7 +200,7 @@ describe("ModeratorRuntime", () => {
       ];
 
       const mcp = createMcpStub({
-        sendMessageResult: JSON.stringify({ id: "event_msg_1", createdAt: new Date().toISOString() }),
+        sentId: "event_msg_1",
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
@@ -226,25 +248,22 @@ describe("ModeratorRuntime", () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       llmTools = [];
       script = [assistant([classifyCall("active", "New arguments keep arriving")]), assistant()];
-      const mcp = createMcpStub();
-      mcp.listToolSpecs = async () => [
-        toolSpec("matrix_read_room"),
-        toolSpec("matrix_reply"),
-        toolSpec("matrix_post"),
-        toolSpec("matrix_add_reaction"),
-      ];
+      // The real client, so this pins the specs the Moderator actually asks
+      // for: the shared catalog minus Reply, plus its own classify tool.
+      const mcp = new MatrixMcpClient("http://unused", "token", async () => "[]");
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
         topic: TOPIC,
         roomId: ROOM_ID,
         logDir,
-        mcp: mcp as never,
+        mcp,
         llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
       });
 
       await runtime.runTurn();
 
       const names = llmTools[0]!.map((t) => t.function.name);
+      expect(names).toContain("matrix_read_room");
       expect(names).toContain("matrix_post");
       expect(names).not.toContain("matrix_reply");
       expect(names).toContain("classify_discussion");
@@ -259,10 +278,13 @@ describe("ModeratorRuntime", () => {
       ];
       const sent: string[] = [];
       const mcp = createMcpStub();
-      const originalCall = mcp.callTool;
-      mcp.callTool = async (name, args) => {
-        sent.push(name);
-        return originalCall(name, args);
+      mcp.post = async () => {
+        sent.push("post");
+        return { kind: "sent", message: { id: "event_1", createdAt: new Date().toISOString() } };
+      };
+      mcp.reply = async () => {
+        sent.push("reply");
+        return { kind: "sent", message: { id: "event_2", createdAt: new Date().toISOString() } };
       };
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
@@ -337,7 +359,7 @@ describe("ModeratorRuntime", () => {
       ];
 
       const mcp = createMcpStub({
-        sendMessageResult: JSON.stringify({ id: "event_final", createdAt: new Date().toISOString() }),
+        sentId: "event_final",
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
@@ -373,12 +395,16 @@ describe("ModeratorRuntime", () => {
         assistant(),
       ];
 
-      const roomMessages = ["first argument", "second argument", "third argument"].map((content, i) => ({
-        id: `$e${i}`,
-        sender: "@agent:example.com",
-        content,
-      }));
-      const mcp = createMcpStub({ readRoomResult: JSON.stringify(roomMessages) });
+      const roomMessages: RoomMessage[] = ["first argument", "second argument", "third argument"].map(
+        (content, i) => ({
+          eventId: `$e${i}`,
+          sender: "@agent:example.com",
+          senderDisplayName: "Agent",
+          content,
+          createdAt: "2026-01-01T00:00:00Z",
+        }),
+      );
+      const mcp = createMcpStub({ readRoom: roomMessages });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
         topic: TOPIC,
@@ -614,7 +640,7 @@ describe("ModeratorRuntime", () => {
       ];
 
       const mcp = createMcpStub({
-        sendMessageResult: JSON.stringify({ id: "event_end", createdAt: new Date().toISOString() }),
+        sentId: "event_end",
       });
       const runtime = new ModeratorRuntime({
         runId: RUN_ID,
@@ -670,14 +696,6 @@ describe("ModeratorRuntime", () => {
       mcp.waitForActivity = async (args) => {
         waitCalls++;
         return originalWait(args);
-      };
-
-      const originalCall = mcp.callTool;
-      mcp.callTool = async (name, args) => {
-        if (name === "matrix_post") {
-          return JSON.stringify({ id: "event_end", createdAt: new Date().toISOString() });
-        }
-        return originalCall(name, args);
       };
 
       await runtime.runLoop();
@@ -944,10 +962,9 @@ describe("ModeratorRuntime", () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       const mcp = createMcpStub();
       let waitCalls = 0;
-      const room = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: `$m${i}` })));
       mcp.waitForActivity = async () => {
         waitCalls++;
-        mcp.callTool = async () => room(waitCalls === 1 ? 2 : 5);
+        mcp.readRoom = async () => roomOf(waitCalls === 1 ? 2 : 5);
         return { hasActivity: true, nextBatch: `s${waitCalls}` };
       };
       const { turnRetry } = fastTurnRetry(3);
@@ -1152,9 +1169,9 @@ describe("ModeratorRuntime", () => {
     test("runTurn tells the first Assessment the room's count and later ones what is new", async () => {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       llmCalls = [];
-      let room = [{ body: "Seed" }];
+      let roomMessages = roomOf(1);
       const mcp = createMcpStub();
-      mcp.callTool = async () => JSON.stringify(room);
+      mcp.readRoom = async () => roomMessages;
       script = [
         assistant([classifyCall("active", "Just begun")]),
         assistant(),
@@ -1171,7 +1188,7 @@ describe("ModeratorRuntime", () => {
       });
 
       await runtime.runTurn();
-      room = [...room, { body: "a" }, { body: "b" }];
+      roomMessages = roomOf(3);
       await runtime.runTurn();
 
       const turnMessages = llmCalls.map((call) => call.find((m) => m.role === "user")?.content ?? "");
@@ -1343,16 +1360,14 @@ describe("ModeratorRuntime", () => {
       { agentId: "bri", matrixUserId: "@agora-bri:example.com" },
     ];
 
-    function roomWith(senders: string[]): string {
-      return JSON.stringify(
-        senders.map((sender, i) => ({
-          eventId: `$e${i}`,
-          sender,
-          senderDisplayName: sender,
-          content: sender === SETUP_USER_ID ? "**your message:** The floor is yours." : `post ${i}`,
-          createdAt: new Date().toISOString(),
-        })),
-      );
+    function roomWith(senders: string[]): RoomMessage[] {
+      return senders.map((sender, i) => ({
+        eventId: `$e${i}`,
+        sender,
+        senderDisplayName: sender,
+        content: sender === SETUP_USER_ID ? "**your message:** The floor is yours." : `post ${i}`,
+        createdAt: new Date().toISOString(),
+      }));
     }
 
     async function readEvents(logDir: string): Promise<Array<Record<string, unknown>>> {
@@ -1363,7 +1378,7 @@ describe("ModeratorRuntime", () => {
         .map((line) => JSON.parse(line) as Record<string, unknown>);
     }
 
-    async function runStaleTurn(readRoomResult: string) {
+    async function runStaleTurn(readRoom: RoomMessage[]) {
       const logDir = await mkdtemp(path.join(tmpdir(), "agora-test-"));
       script = [
         assistant([classifyCall("stale", "Nothing new is being said")]),
@@ -1377,7 +1392,7 @@ describe("ModeratorRuntime", () => {
         roomId: ROOM_ID,
         logDir,
         roster,
-        mcp: createMcpStub({ readRoomResult }) as never,
+        mcp: createMcpStub({ readRoom }) as never,
         llm: { baseUrl: "http://localhost", apiKey: "test", model: "test" },
         waitTimeoutMs: 100,
       });
@@ -1388,7 +1403,7 @@ describe("ModeratorRuntime", () => {
     test("is refused, naming the silent agents, and recorded as ACTIVE", async () => {
       // Only the setup account (not in the roster) and alex have posted; bri's
       // reaction is not a post.
-      const room = JSON.parse(roomWith([SETUP_USER_ID, "@agora-alex:example.com"])) as unknown[];
+      const room = roomWith([SETUP_USER_ID, "@agora-alex:example.com"]);
       room.push({
         eventId: "$r",
         sender: "@agora-bri:example.com",
@@ -1396,7 +1411,7 @@ describe("ModeratorRuntime", () => {
         content: "[reaction] 👍",
         createdAt: new Date().toISOString(),
       });
-      const { result, events } = await runStaleTurn(JSON.stringify(room));
+      const { result, events } = await runStaleTurn(room);
 
       expect(result).toEqual({ classification: "active", shouldEnd: false });
 
@@ -1417,7 +1432,6 @@ describe("ModeratorRuntime", () => {
       const { result, events } = await runStaleTurn(
         roomWith([SETUP_USER_ID, "@agora-alex:example.com", "@agora-bri:example.com"]),
       );
-
       expect(result).toEqual({ classification: "stale", shouldEnd: true });
       const classifications = events.filter((e) => e.type === "moderator_classification");
       expect(classifications.map((e) => e.classification)).toEqual(["stale"]);

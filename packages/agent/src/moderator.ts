@@ -18,7 +18,7 @@
  */
 import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs, type RosterAgent } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
-import type { MatrixMcpClient } from "./mcpClient.js";
+import { roomToolKind, type MatrixMcpClient, type RoomMessage } from "./mcpClient.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
 import { readTurnsInFlight } from "./turnsInFlight.js";
 import { recordUsage } from "./usage.js";
@@ -247,22 +247,11 @@ function describeTurnsInFlight(midTurn: AgentMidTurn[] | null): string {
 /** Upper bound on a logged tool result summary, so the event log never carries a room dump. */
 const TOOL_RESULT_SUMMARY_MAX_CHARS = 200;
 
-/**
- * Summarises a tool result for the event log: a room read becomes its message
- * count, anything else is truncated to a bounded length.
- */
-function summarizeToolResult(tool: string, resultText: string): string {
-  if (tool === "matrix_read_room") {
-    try {
-      const parsed = JSON.parse(resultText) as unknown;
-      if (Array.isArray(parsed)) return `${parsed.length} message${parsed.length === 1 ? "" : "s"}`;
-    } catch {
-      // Not a message list (e.g. an error string); fall through to truncation.
-    }
-  }
-  return resultText.length > TOOL_RESULT_SUMMARY_MAX_CHARS
-    ? `${resultText.slice(0, TOOL_RESULT_SUMMARY_MAX_CHARS - 1)}…`
-    : resultText;
+/** Truncates a tool result for the event log, so it never carries a room dump. */
+function truncateForLog(text: string): string {
+  return text.length > TOOL_RESULT_SUMMARY_MAX_CHARS
+    ? `${text.slice(0, TOOL_RESULT_SUMMARY_MAX_CHARS - 1)}…`
+    : text;
 }
 
 /**
@@ -312,22 +301,17 @@ export class ModeratorRuntime {
    */
   private async countRoomMessages(): Promise<number | null> {
     try {
-      const resultText = await this.config.mcp.callTool("matrix_read_room", {
-        limit: 100,
-      });
-      const parsed = JSON.parse(resultText) as unknown;
-      if (!Array.isArray(parsed)) return null;
-      this.noteSpeakers(parsed);
-      return parsed.length;
+      const roomMessages = await this.config.mcp.readRoom(100);
+      this.noteSpeakers(roomMessages);
+      return roomMessages.length;
     } catch {
       return null;
     }
   }
 
   /** Records the senders of the messages (not reactions) in a room read. */
-  private noteSpeakers(roomMessages: unknown[]): void {
-    for (const entry of roomMessages) {
-      const { sender, content } = (entry ?? {}) as { sender?: unknown; content?: unknown };
+  private noteSpeakers(roomMessages: readonly RoomMessage[]): void {
+    for (const { sender, content } of roomMessages) {
       if (typeof sender !== "string") continue;
       if (typeof content === "string" && content.startsWith("[reaction] ")) continue;
       this.speakers.add(sender);
@@ -368,14 +352,14 @@ export class ModeratorRuntime {
   constructor(private readonly config: ModeratorRuntimeConfig) {}
 
   /** Records one of the model's tool calls in the event log. */
-  private async recordToolCall(tool: string, args: Record<string, unknown>, resultText: string): Promise<void> {
+  private async recordToolCall(tool: string, args: Record<string, unknown>, summary: string): Promise<void> {
     const { logDir, runId } = this.config;
     await appendEvent(logDir, runId, {
       type: "moderator_tool_call",
       runId,
       tool,
       args,
-      resultSummary: summarizeToolResult(tool, resultText),
+      resultSummary: truncateForLog(summary),
       timestamp: new Date().toISOString(),
     });
   }
@@ -407,9 +391,9 @@ export class ModeratorRuntime {
     });
 
     // The Moderator only ever sends Room posts: a judge that Replies to one
-    // agent would appear to address one party (ADR-0010). So matrix_reply is
-    // withheld from its model, and refused below should it be called anyway.
-    const mcpTools = (await mcp.listToolSpecs()).filter((t) => t.function.name !== "matrix_reply");
+    // agent would appear to address one party (ADR-0010). So Reply is withheld
+    // from its model, and refused below should it be called anyway.
+    const mcpTools = mcp.listToolSpecs({ exclude: ["reply"] });
     const tools = [...mcpTools, CLASSIFY_TOOL];
 
     const currentCount = await this.countRoomMessages();
@@ -465,6 +449,10 @@ export class ModeratorRuntime {
         }
 
         let resultText: string;
+        // A room read is a whole JSON dump, so the event log gets a short
+        // summary instead; every other result doubles as its own summary.
+        let summary: string | undefined;
+        const kind = roomToolKind(call.function.name);
 
         if (call.function.name === "classify_discussion") {
           const rawClassification = String(args.classification).toLowerCase();
@@ -502,12 +490,12 @@ export class ModeratorRuntime {
           } else {
             resultText = `invalid classification "${String(args.classification)}"; must be "active" or "stale"`;
           }
-        } else if (call.function.name === "matrix_reply") {
-          // Not in the Moderator's tool list, but a model can name any tool.
-          // Refused rather than forwarded, so the closing message can never
-          // land as a Reply to one agent.
+        } else if (kind === "reply") {
+          // Reply is not in the Moderator's tool list, but a model can name any
+          // tool. Refused rather than forwarded, so the closing message can
+          // never land as a Reply to one agent.
           resultText =
-            "ERROR: matrix_reply is not available to the Moderator. Your closing message is a Room post: use matrix_post.";
+            `ERROR: ${call.function.name} is not available to the Moderator. Your closing message is a Room post: use matrix_post.`;
           await this.recordToolCall(call.function.name, args, resultText);
           messages.push({
             role: "tool",
@@ -516,7 +504,7 @@ export class ModeratorRuntime {
             content: resultText,
           });
           continue;
-        } else if (call.function.name === "matrix_post") {
+        } else if (kind === "post") {
           // STRUCTURAL INVARIANT: posting is only reachable after a STALE
           // classification in this Assessment; anything else is rejected here,
           // so the prompt's rule does not depend on the model obeying it.
@@ -537,7 +525,7 @@ export class ModeratorRuntime {
           const body = typeof args.content === "string" ? args.content : "";
           if (body.trim().length === 0) {
             resultText =
-              "matrix_post rejected: 'content' must be a non-empty string. Provide your closing message.";
+              `${call.function.name} rejected: 'content' must be a non-empty string. Provide your closing message.`;
             await this.recordToolCall(call.function.name, args, resultText);
             messages.push({
               role: "tool",
@@ -548,31 +536,48 @@ export class ModeratorRuntime {
             continue;
           }
 
-          resultText = await mcp.callTool(call.function.name, { ...args, content: body });
-          // Set before parsing: the message is in the room even if the response
-          // below is malformed, and runLoop must not re-run and post again.
+          const outcome = await mcp.post(body);
+          // Set before trusting the response: the message is in the room even
+          // if its envelope is malformed, and runLoop must not re-run and post
+          // again.
           this.postedThisTurn = true;
-          try {
-            const sent = JSON.parse(resultText) as { id: string; createdAt: string };
-            closingMessageId = sent.id;
-            await appendEvent(logDir, runId, {
-              type: "message",
-              runId,
-              agentId: "moderator",
-              matrixEventId: sent.id,
-              roomId,
-              content: body,
-              timestamp: sent.createdAt,
-            });
-            resultText = `message posted (${sent.id})`;
-          } catch (parseError) {
-            this.log.error("failed to parse matrix_post response:", resultText);
-            throw new Error(`Invalid response from matrix_post: ${resultText}`);
+          if (outcome.kind === "unreadable") {
+            this.log.error(`failed to parse ${call.function.name} response:`, outcome.raw);
+            throw new Error(`Invalid response from ${call.function.name}: ${outcome.raw}`);
           }
+          closingMessageId = outcome.message.id;
+          await appendEvent(logDir, runId, {
+            type: "message",
+            runId,
+            agentId: "moderator",
+            matrixEventId: outcome.message.id,
+            roomId,
+            content: body,
+            timestamp: outcome.message.createdAt,
+          });
+          resultText = `message posted (${outcome.message.id})`;
         } else {
-          // Other MCP tools (e.g. matrix_read_room for reading the discussion).
+          // The remaining room operations: reading the discussion, and a
+          // reaction the model should not need but may attempt.
           try {
-            resultText = await mcp.callTool(call.function.name, args);
+            if (kind === "read") {
+              const roomMessages = await mcp.readRoom(
+                typeof args.limit === "number" ? args.limit : undefined,
+              );
+              resultText = JSON.stringify(roomMessages);
+              summary = `${roomMessages.length} message${roomMessages.length === 1 ? "" : "s"}`;
+            } else if (kind === "reaction") {
+              const outcome = await mcp.addReaction(
+                typeof args.eventId === "string" ? args.eventId : String(args.eventId ?? ""),
+                typeof args.reaction === "string" ? args.reaction : String(args.reaction ?? ""),
+              );
+              // A tool-level failure comes back as text; the model should see
+              // it rather than be told the reaction worked.
+              resultText =
+                outcome.kind === "done" ? "ok" : `${call.function.name} failed: ${outcome.reason}`;
+            } else {
+              resultText = `ERROR: unknown tool "${call.function.name}".`;
+            }
           } catch (err) {
             // A failed read ends the Assessment; log it so the gap is visible.
             await this.recordToolCall(call.function.name, args, `failed: ${String(err)}`);
@@ -580,7 +585,7 @@ export class ModeratorRuntime {
           }
         }
 
-        await this.recordToolCall(call.function.name, args, resultText);
+        await this.recordToolCall(call.function.name, args, summary ?? resultText);
         messages.push({
           role: "tool",
           tool_call_id: call.id,

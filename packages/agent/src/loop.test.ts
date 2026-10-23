@@ -5,12 +5,19 @@
  * corrupting the stance, the Turn bracket events, and runLoop's recovery from
  * failed waits and failed turns.
  */
-import { describe, expect, mock, spyOn, test } from "bun:test";
+import { beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentDefinition } from "@agora/shared";
 import type { ChatMessage, ToolCall, ToolSpec } from "./llm.js";
+import type {
+  PostOutcome,
+  ReactionOutcome,
+  ReplyOutcome,
+  RoomMessage,
+  SentMessage,
+} from "./mcpClient.js";
 
 // loop.ts drives its tool loop through `chatCompletion` from ./llm.js, so to
 // script what the model decides to do (which tool it calls, or whether it
@@ -79,11 +86,6 @@ function rawSendCall(argumentsJson: string, name = "matrix_post"): ToolCall {
   };
 }
 
-/** Whether a tool name is one of the two send tools (ADR-0010). */
-function isSend(name: string): boolean {
-  return name === "matrix_post" || name === "matrix_reply";
-}
-
 function stanceCall(): ToolCall {
   return {
     id: "call_stance",
@@ -108,24 +110,54 @@ function assistant(tool_calls?: ToolCall[]): ScriptedMessage {
   return { role: "assistant", content: tool_calls ? "thinking..." : "done", tool_calls };
 }
 
-// A module-level mcp stub whose callTool is swapped per test to simulate a
-// successful send (a well-formed event envelope) or a hard
-// failure. listToolSpecs returns no extra tools; the runtime adds stance itself.
-// waitForActivity is exercised by the runLoop tests and stubbed to not block.
+// A module-level room stub whose operations are swapped per test to simulate a
+// successful send, a refusal, or a hard failure. listToolSpecs returns no extra
+// tools; the runtime adds stance itself. waitForActivity is exercised by the
+// runLoop tests and stubbed to not block.
+//
+// The stub speaks the room interface rather than MCP tool names and JSON
+// envelopes, so the tests describe what the runtime asked the room to do.
+const SENT: SentMessage = { id: "$evt", createdAt: "2026-01-01T00:00:00Z" };
+const POSTED: PostOutcome = { kind: "sent", message: SENT };
+const REPLIED: ReplyOutcome = { kind: "sent", message: SENT };
+
+function roomOf(n: number): RoomMessage[] {
+  return Array.from({ length: n }, (_, i) => ({
+    eventId: `$m${i}`,
+    sender: "@member:localhost",
+    senderDisplayName: "Member",
+    content: `message ${i}`,
+    createdAt: "2026-01-01T00:00:00Z",
+  }));
+}
+
 const mcp: {
-  listToolSpecs: () => Promise<ToolSpec[]>;
-  callTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+  listToolSpecs: () => ToolSpec[];
+  readRoom: (limit?: number) => Promise<RoomMessage[]>;
+  reply: (eventId: string, content: string) => Promise<ReplyOutcome>;
+  post: (content: string) => Promise<PostOutcome>;
+  addReaction: (eventId: string, reaction: string) => Promise<ReactionOutcome>;
   waitForActivity: (args: { timeoutMs: number; since?: string }) => Promise<{
     hasActivity: boolean;
     nextBatch: string;
   }>;
 } = {
-  listToolSpecs: async () => [],
-  callTool: async () => {
-    throw new Error("not reached");
-  },
+  listToolSpecs: () => [],
+  readRoom: async () => [],
+  reply: async () => REPLIED,
+  post: async () => POSTED,
+  addReaction: async () => ({ kind: "done" }),
   waitForActivity: async () => ({ hasActivity: false, nextBatch: "s1" }),
 };
+
+beforeEach(() => {
+  mcp.listToolSpecs = () => [];
+  mcp.readRoom = async () => [];
+  mcp.reply = async () => REPLIED;
+  mcp.post = async () => POSTED;
+  mcp.addReaction = async () => ({ kind: "done" });
+  mcp.waitForActivity = async () => ({ hasActivity: false, nextBatch: "s1" });
+});
 
 function makeRuntime(overrides: Record<string, unknown> = {}) {
   return new AgentRuntime({
@@ -143,12 +175,9 @@ function makeRuntime(overrides: Record<string, unknown> = {}) {
   });
 }
 
-const OK_SEND = () => JSON.stringify({ id: "$evt", createdAt: "2026-01-01T00:00:00Z" });
-
 describe("AgentRuntime own message history", () => {
   test("a successfully posted message is remembered in the queue", async () => {
     script = [assistant([sendCall("I think a 30 limit is right")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
     await runtime.runTurn();
@@ -158,9 +187,9 @@ describe("AgentRuntime own message history", () => {
 
   test("a failed send is not remembered as a commitment", async () => {
     script = [assistant([sendCall("this should not stick")]), assistant([stanceCall()]), assistant()];
-    // Hard failure: the MCP call throws, so the send never completes and the
+    // Hard failure: the room call throws, so the send never completes and the
     // queue must not advance.
-    mcp.callTool = async () => {
+    mcp.post = async () => {
       throw new Error("homeserver rejected the message");
     };
 
@@ -180,20 +209,23 @@ describe("AgentRuntime own message history", () => {
       assistant([stanceCall()]),
       assistant(),
     ];
-    const sent: Array<Record<string, unknown>> = [];
-    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (!isSend(name)) return "{}";
-      sent.push(args);
-      return OK_SEND();
+    const sent: Array<{ kind: "post"; content: string } | { kind: "reply"; eventId: string; content: string }> =
+      [];
+    mcp.post = async (content) => {
+      sent.push({ kind: "post", content });
+      return POSTED;
+    };
+    mcp.reply = async (eventId, content) => {
+      sent.push({ kind: "reply", eventId, content });
+      return REPLIED;
     };
 
     const runtime = makeRuntime();
     await runtime.runTurn(); // does not throw
 
-    // The empty-body call never reached the homeserver; only the correction did,
-    // and a successful post is remembered as usual.
-    expect(sent).toHaveLength(1);
-    expect(sent[0]?.content).toBe("I think a 30 limit is right");
+    // The empty-body call never reached the room; only the correction did, and a
+    // successful post is remembered as usual.
+    expect(sent).toEqual([{ kind: "post", content: "I think a 30 limit is right" }]);
     expect(runtime.getOwnMessageHistory()).toEqual(["I think a 30 limit is right"]);
   });
 
@@ -205,11 +237,15 @@ describe("AgentRuntime own message history", () => {
       assistant([stanceCall()]),
       assistant(),
     ];
-    const sent: Array<Record<string, unknown>> = [];
-    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (!isSend(name)) return "{}";
-      sent.push(args);
-      return OK_SEND();
+    const sent: Array<{ kind: "post"; content: string } | { kind: "reply"; eventId: string; content: string }> =
+      [];
+    mcp.post = async (content) => {
+      sent.push({ kind: "post", content });
+      return POSTED;
+    };
+    mcp.reply = async (eventId, content) => {
+      sent.push({ kind: "reply", eventId, content });
+      return REPLIED;
     };
 
     const runtime = makeRuntime();
@@ -221,7 +257,6 @@ describe("AgentRuntime own message history", () => {
 
   test("memory is isolated per agent", async () => {
     script = [assistant([sendCall("Alice posts")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const alice = makeRuntime({ agentId: "alice", agentDef: { ...AGENT, id: "alice" } });
     const bob = makeRuntime({
@@ -238,7 +273,6 @@ describe("AgentRuntime own message history", () => {
 
   test("memory is isolated per run: each fresh runtime starts empty", async () => {
     script = [assistant([sendCall("run one post")]), assistant([stanceCall()]), assistant()];
-    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     // A new Run is a fresh agent container with its own runtime (per
     // architecture each Run's compose stack is brought up separately), so it
@@ -255,7 +289,6 @@ describe("AgentRuntime own message history", () => {
     // The runner posted the seed with this agent's account, so it is the
     // agent's first message of the Run, and its first turn is told so.
     script = [assistant()];
-    mcp.callTool = async () => "[]";
 
     const runtime = makeRuntime({ seedMessage: "The floor is yours." });
     expect(runtime.getOwnMessageHistory()).toEqual(["The floor is yours."]);
@@ -276,7 +309,6 @@ describe("AgentRuntime own message history", () => {
       assistant([stanceCall()]),
       assistant(),
     ];
-    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "{}");
 
     const runtime = makeRuntime();
     await runtime.runTurn();
@@ -292,11 +324,16 @@ describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
   async function messageEventsAfter(calls: ToolCall[]) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-reply-post-"));
     script = [assistant(calls), assistant([stanceCall()]), assistant()];
-    const sent: Array<{ name: string; args: Record<string, unknown> }> = [];
-    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (!isSend(name)) return "{}";
-      sent.push({ name, args });
-      return OK_SEND();
+    const sent: Array<
+      { kind: "post"; content: string } | { kind: "reply"; eventId: string; content: string }
+    > = [];
+    mcp.post = async (content) => {
+      sent.push({ kind: "post", content });
+      return POSTED;
+    };
+    mcp.reply = async (eventId, content) => {
+      sent.push({ kind: "reply", eventId, content });
+      return REPLIED;
     };
     const runtime = makeRuntime({ logDir });
     await runtime.runTurn();
@@ -312,7 +349,7 @@ describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
   test("a Reply reaches the server with its target and records replyToEventId", async () => {
     const { messages, sent, runtime } = await messageEventsAfter([replyCall("$bob1", "I disagree, Bob")]);
 
-    expect(sent).toEqual([{ name: "matrix_reply", args: { eventId: "$bob1", content: "I disagree, Bob" } }]);
+    expect(sent).toEqual([{ kind: "reply", eventId: "$bob1", content: "I disagree, Bob" }]);
     expect(messages).toEqual([
       expect.objectContaining({ content: "I disagree, Bob", replyToEventId: "$bob1", matrixEventId: "$evt" }),
     ]);
@@ -323,7 +360,7 @@ describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
   test("a Room post records no replyToEventId", async () => {
     const { messages, sent } = await messageEventsAfter([sendCall("A new point for everyone")]);
 
-    expect(sent).toEqual([{ name: "matrix_post", args: { content: "A new point for everyone" } }]);
+    expect(sent).toEqual([{ kind: "post", content: "A new point for everyone" }]);
     expect(messages).toHaveLength(1);
     expect(messages[0]).not.toHaveProperty("replyToEventId");
   });
@@ -345,9 +382,9 @@ describe("AgentRuntime Reply and Room post (ADR-0010)", () => {
       assistant(),
     ];
     const sent: unknown[] = [];
-    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (isSend(name)) sent.push(args);
-      return OK_SEND();
+    mcp.reply = async (eventId, content) => {
+      sent.push({ eventId, content });
+      return REPLIED;
     };
     llmCalls = [];
     await makeRuntime().runTurn();
@@ -366,14 +403,17 @@ describe("AgentRuntime rejected Replies (agora-jb3.2)", () => {
 
   /** Rejects Replies to `$mine`, accepts every other send; records what was sent. */
   function rejectingOwnTarget() {
-    const sent: Array<Record<string, unknown>> = [];
-    mcp.callTool = async (name: string, args: Record<string, unknown>) => {
-      if (!isSend(name)) return "{}";
-      if (name === "matrix_reply" && args.eventId === "$mine") {
-        return JSON.stringify({ rejected: REJECTION });
-      }
-      sent.push(args);
-      return OK_SEND();
+    const sent: Array<
+      { kind: "post"; content: string } | { kind: "reply"; eventId: string; content: string }
+    > = [];
+    mcp.reply = async (eventId, content) => {
+      if (eventId === "$mine") return { kind: "rejected", reason: REJECTION };
+      sent.push({ kind: "reply", eventId, content });
+      return REPLIED;
+    };
+    mcp.post = async (content) => {
+      sent.push({ kind: "post", content });
+      return POSTED;
     };
     return sent;
   }
@@ -415,7 +455,7 @@ describe("AgentRuntime rejected Replies (agora-jb3.2)", () => {
       }),
     ]);
     // Only the retry reached the room and the transcript.
-    expect(sent).toEqual([{ eventId: "$bob1", content: "I disagree, Bob" }]);
+    expect(sent).toEqual([{ kind: "reply", eventId: "$bob1", content: "I disagree, Bob" }]);
     expect(events.filter((e) => e.type === "message")).toEqual([
       expect.objectContaining({ content: "I disagree, Bob", replyToEventId: "$bob1" }),
     ]);
@@ -667,12 +707,9 @@ describe("AgentRuntime new-message tracking", () => {
     // starts a fresh run, so it reports nothing new; 3 messages arrive before
     // turn 2, and its message reports 3 new.
     let reads = 0;
-    mcp.callTool = async (name: string) => {
-      if (name !== "matrix_read_room") return "{}";
+    mcp.readRoom = async () => {
       reads += 1;
-      return reads === 1
-        ? JSON.stringify([{}, {}, {}, {}])
-        : JSON.stringify([{}, {}, {}, {}, {}, {}, {}]);
+      return roomOf(reads === 1 ? 4 : 7);
     };
 
     // The model needn't read for the news to be counted; give it a no-op turn.
@@ -689,10 +726,9 @@ describe("AgentRuntime new-message tracking", () => {
 
   test("single new message uses singular wording", async () => {
     let reads = 0;
-    mcp.callTool = async (name: string) => {
-      if (name !== "matrix_read_room") return "{}";
+    mcp.readRoom = async () => {
       reads += 1;
-      return reads === 1 ? "[]" : JSON.stringify([{}]);
+      return roomOf(reads === 1 ? 0 : 1);
     };
 
     script = [assistant([stanceCall()]), assistant(), assistant([stanceCall()]), assistant()];
@@ -704,8 +740,8 @@ describe("AgentRuntime new-message tracking", () => {
   });
 
   test("an unreadable room degrades to nothing new without failing the turn", async () => {
-    mcp.callTool = async (name: string) => {
-      // Both the count-read and any send fail catastrophically.
+    mcp.readRoom = async () => {
+      // The count-read fails catastrophically; the turn must survive it.
       throw new Error("homeserver unreachable");
     };
     script = [assistant([stanceCall()]), assistant()];
@@ -736,7 +772,6 @@ describe("AgentRuntime update_stance malformed-argument guard", () => {
   async function stanceEventsAfter(script_: Array<ScriptedMessage>) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-stance-guard-"));
     script = script_;
-    mcp.callTool = async () => "{}";
     const runtime = makeRuntime({ logDir, agentDef: stancedAgent });
     await runtime.runTurn();
     const raw = await readFile(path.join(logDir, "scenario-test", "events.jsonl"), "utf8");
@@ -838,8 +873,6 @@ describe("AgentRuntime turn bracketing events", () => {
   // per-agent turn liveness evidence, not a stub.
   async function turnEventsAfter(script_: Array<ScriptedMessage | Error>, runTurns = 1) {
     const logDir = await mkdtemp(path.join(tmpdir(), "agora-turn-bracket-"));
-    mcp.callTool = async (name: string) =>
-      isSend(name) ? OK_SEND() : "{}";
     const runtime = makeRuntime({ logDir });
     // A full 3-slot script per runTurn: turn, stance, stop.
     for (let i = 0; i < runTurns; i++) {
@@ -910,7 +943,6 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       waited += 1;
       return behavior(waited, args);
     };
-    mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : "[]");
     const runtime = makeRuntime({
       logDir,
       waitTimeoutMs: 100,
@@ -1108,13 +1140,13 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
     ];
     llmCalls = [];
     const { turnRetry } = fastTurnRetry(3);
-    const room = (n: number) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: `$m${i}` })));
+    const room = (n: number) => roomOf(n);
     const errors = spyOn(console, "error").mockImplementation(() => {});
     try {
       await runLoopOnce(
         2,
         async (n) => {
-          mcp.callTool = async (name: string) => (isSend(name) ? OK_SEND() : room(n === 1 ? 2 : 5));
+          mcp.readRoom = async () => room(n === 1 ? 2 : 5);
           return { hasActivity: true, nextBatch: `s${n + 1}` };
         },
         { turnRetry },
@@ -1193,8 +1225,7 @@ describe("AgentRuntime continuous event-driven loop (runLoop)", () => {
       const { events } = await runLoopOnce(
         1,
         async () => {
-          mcp.callTool = async (name: string) =>
-            name === "matrix_reply" ? JSON.stringify({ rejected: "your own message" }) : "[]";
+          mcp.reply = async () => ({ kind: "rejected", reason: "your own message" });
           return { hasActivity: true, nextBatch: "s2" };
         },
         { turnRetry },

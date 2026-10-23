@@ -11,7 +11,7 @@
 import type { AgentDefinition, Logger } from "@agora/shared";
 import { appendEvent, createLogger, matrixWaitForActivityTimeoutMs } from "@agora/shared";
 import { chatCompletion, type ChatMessage, type ToolSpec, type LlmConfig } from "./llm.js";
-import type { MatrixMcpClient } from "./mcpClient.js";
+import { roomToolKind, type MatrixMcpClient, type PostOutcome } from "./mcpClient.js";
 import { buildSystemPrompt } from "./persona.js";
 import { DEFAULT_TURN_RETRY, runTurnWithRetry, type TurnRetryOptions } from "./turnRetry.js";
 import { recordUsage } from "./usage.js";
@@ -122,21 +122,6 @@ const OWN_MESSAGE_HISTORY_MAX = 3;
  */
 const ROOM_COUNT_LIMIT = 100;
 
-/**
- * The reason from a matrix_reply result of the form { rejected: <reason> }, the
- * MCP server's answer when a Reply's target may not be answered; undefined for
- * anything else, including text that is not JSON, which the send path then
- * reports as an invalid response.
- */
-function replyRejection(resultText: string): string | undefined {
-  try {
-    const parsed = JSON.parse(resultText) as { rejected?: unknown } | null;
-    return typeof parsed?.rejected === "string" ? parsed.rejected : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 const STANCE_TOOL: ToolSpec = {
   type: "function",
   function: {
@@ -213,14 +198,49 @@ export class AgentRuntime {
    */
   private async countRoomMessages(): Promise<number | null> {
     try {
-      const resultText = await this.config.mcp.callTool("matrix_read_room", {
-        limit: ROOM_COUNT_LIMIT,
-      });
-      const parsed = JSON.parse(resultText) as unknown;
-      return Array.isArray(parsed) ? parsed.length : null;
+      return (await this.config.mcp.readRoom(ROOM_COUNT_LIMIT)).length;
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Records a send the room accepted and returns the tool result the model will
+   * see. The "posted" flag is set as soon as the send returns, before the
+   * envelope is trusted, so a send whose response is unreadable still counts: a
+   * failed turn that sent must not be re-run, which could post twice.
+   *
+   * Only a fully successful send becomes a remembered commitment: reaching the
+   * history push means the transcript event landed, so a message the room never
+   * saw is not offered back to the model as something to avoid restating.
+   */
+  private async recordSend(
+    tool: string,
+    outcome: PostOutcome,
+    content: string,
+    replyToEventId?: string,
+  ): Promise<string> {
+    this.postedThisTurn = true;
+    if (outcome.kind === "unreadable") {
+      this.log.error(`failed to parse ${tool} response:`, outcome.raw);
+      throw new Error(`Invalid response from ${tool}: ${outcome.raw}`);
+    }
+    const { runId, agentId, roomId, logDir } = this.config;
+    await appendEvent(logDir, runId, {
+      type: "message",
+      runId,
+      agentId,
+      matrixEventId: outcome.message.id,
+      roomId,
+      content,
+      replyToEventId,
+      timestamp: outcome.message.createdAt,
+    });
+    this.ownMessageHistory.push(content);
+    if (this.ownMessageHistory.length > OWN_MESSAGE_HISTORY_MAX) {
+      this.ownMessageHistory.shift();
+    }
+    return JSON.stringify(outcome.message);
   }
 
   constructor(private readonly config: AgentRuntimeConfig) {
@@ -264,8 +284,7 @@ export class AgentRuntime {
    * send), leaving the bracket for runLoop to close with `agent_turn_failed`.
    */
   async runTurn(): Promise<TurnResult> {
-    const { runId, agentId, agentDef, topic, roomId, maxToolStepsPerTurn, logDir, mcp, llm } =
-      this.config;
+    const { runId, agentId, agentDef, topic, maxToolStepsPerTurn, logDir, mcp, llm } = this.config;
 
     this.turn += 1;
     const turn = this.turn;
@@ -278,7 +297,7 @@ export class AgentRuntime {
       timestamp: new Date().toISOString(),
     });
 
-    const mcpTools = await mcp.listToolSpecs();
+    const mcpTools = mcp.listToolSpecs();
     const tools = [...mcpTools, STANCE_TOOL];
 
     // The runtime counts messages itself (rather than depending on whether the
@@ -381,8 +400,8 @@ export class AgentRuntime {
             resultText = `invalid stance (${String(args.stance)}) not applied; stance remains ${prior}`;
           }
         } else {
-          const sendTool = call.function.name;
-          if (sendTool === "matrix_reply" || sendTool === "matrix_post") {
+          const kind = roomToolKind(call.function.name);
+          if (kind === "reply" || kind === "post") {
             // A model that emits the call without a body must not drop the turn
             // or reach the homeserver: `content` is required, and posting an
             // empty string would only land a meaningless event in the room. So a
@@ -397,74 +416,54 @@ export class AgentRuntime {
             const body = typeof args.content === "string" ? args.content : "";
             if (body.trim().length === 0) {
               resultText =
-                `${sendTool} rejected: 'content' must be a non-empty string. Provide the message you want to send and call the tool again, or don't send one.`;
-              messages.push({
-                role: "tool",
-                tool_call_id: call.id,
-                name: call.function.name,
-                content: resultText,
-              });
-              continue;
-            }
-            resultText = await mcp.callTool(call.function.name, { ...args, content: body });
-            // A Reply whose target the MCP server refused (the agent's own
-            // message, a reaction, an unknown id) sent nothing. Like the empty
-            // body above, the reason goes back to the model as the tool result
-            // so it can retry within the turn; it is recorded, but not as a
-            // message, and does not count as having posted.
-            const rejection = sendTool === "matrix_reply" ? replyRejection(resultText) : undefined;
-            if (rejection !== undefined) {
-              await appendEvent(logDir, runId, {
-                type: "reply_rejected",
-                runId,
-                agentId,
-                turn,
-                targetEventId: typeof args.eventId === "string" ? args.eventId : String(args.eventId),
-                reason: rejection,
-                timestamp: new Date().toISOString(),
-              });
-              messages.push({
-                role: "tool",
-                tool_call_id: call.id,
-                name: call.function.name,
-                content: resultText,
-              });
-              continue;
-            }
-            this.postedThisTurn = true;
-            try {
-              const sent = JSON.parse(resultText) as { id: string; createdAt: string };
-              await appendEvent(logDir, runId, {
-                type: "message",
-                runId,
-                agentId,
-                matrixEventId: sent.id,
-                roomId,
-                content: body,
-                // Only a Reply carries a target, so a message event without one
-                // is a deliberate Room post (ADR-0010). A stray target argument
-                // on matrix_post never reached the room and is not recorded.
-                replyToEventId:
-                  sendTool === "matrix_reply" && typeof args.eventId === "string"
-                    ? args.eventId
-                    : undefined,
-                timestamp: sent.createdAt,
-              });
-              // Only a fully successful post becomes a remembered commitment:
-              // reaching here means the send did not throw and the transcript
-              // event landed. A failed send throws above (or in callTool) and
-              // never advances the queue, so a message the room never saw is
-              // not offered back to the model as something to avoid restating.
-              this.ownMessageHistory.push(body);
-              if (this.ownMessageHistory.length > OWN_MESSAGE_HISTORY_MAX) {
-                this.ownMessageHistory.shift();
+                `${call.function.name} rejected: 'content' must be a non-empty string. Provide the message you want to send and call the tool again, or don't send one.`;
+            } else if (kind === "reply") {
+              const target =
+                typeof args.eventId === "string" ? args.eventId : String(args.eventId ?? "");
+              const outcome = await mcp.reply(target, body);
+              // A Reply whose target the MCP server refused (the agent's own
+              // message, a reaction, an unknown id) sent nothing. Like the empty
+              // body above, the reason goes back to the model as the tool result
+              // so it can retry within the turn; it is recorded, but not as a
+              // message, and does not count as having posted.
+              if (outcome.kind === "rejected") {
+                await appendEvent(logDir, runId, {
+                  type: "reply_rejected",
+                  runId,
+                  agentId,
+                  turn,
+                  targetEventId: target,
+                  reason: outcome.reason,
+                  timestamp: new Date().toISOString(),
+                });
+                resultText = JSON.stringify({ rejected: outcome.reason });
+              } else {
+                resultText = await this.recordSend(call.function.name, outcome, body, target);
               }
-            } catch (parseError) {
-              this.log.error(`failed to parse ${sendTool} response:`, resultText);
-              throw new Error(`Invalid response from ${sendTool}: ${resultText}`);
+            } else {
+              const outcome = await mcp.post(body);
+              // Only a Reply carries a target, so a message event without one
+              // is a deliberate Room post (ADR-0010).
+              resultText = await this.recordSend(call.function.name, outcome, body);
             }
+          } else if (kind === "read") {
+            resultText = JSON.stringify(
+              await mcp.readRoom(typeof args.limit === "number" ? args.limit : undefined),
+            );
+          } else if (kind === "reaction") {
+            const outcome = await mcp.addReaction(
+              typeof args.eventId === "string" ? args.eventId : String(args.eventId ?? ""),
+              typeof args.reaction === "string" ? args.reaction : String(args.reaction ?? ""),
+            );
+            // A tool-level failure comes back as text; the model should see it
+            // rather than be told the reaction worked.
+            resultText =
+              outcome.kind === "done" ? "ok" : `${call.function.name} failed: ${outcome.reason}`;
           } else {
-            resultText = await mcp.callTool(call.function.name, args);
+            // The model can name any tool. One the room does not own is refused
+            // here rather than forwarded to the server, which would only answer
+            // with an unknown-tool error.
+            resultText = `ERROR: unknown tool "${call.function.name}".`;
           }
         }
 
